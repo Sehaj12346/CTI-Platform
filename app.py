@@ -146,5 +146,5 @@ def login():
        message=f"Invalid login. Failed attempt {FAILED_ATTEMPTS}/3"
    )
 
-if _name_ == "_main_":
+if __name__ == "__main__":
    app.run(debug=True)
