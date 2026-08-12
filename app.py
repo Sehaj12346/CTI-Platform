@@ -3,7 +3,7 @@ import json
 import os
 from flask import Flask, request, render_template_string, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
-app = Flask(__name__)
+app = Flask(_name_)
 lambda_client = boto3.client("lambda", region_name="us-east-1")
 FAILED_ATTEMPTS = 0
 USERS_FILE = "users.json"
@@ -146,6 +146,5 @@ def login():
        message=f"Invalid login. Failed attempt {FAILED_ATTEMPTS}/3"
    )
 
-if __name__ == "__main__":
+if _name_ == "_main_":
    app.run(debug=True)
-   
