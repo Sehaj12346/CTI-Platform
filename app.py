@@ -4,9 +4,15 @@ import os
 from flask import Flask, request, render_template_string, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
 
-app = Flask(__name__)
+app = Flask(_name_)
 
+# AWS clients
 lambda_client = boto3.client("lambda", region_name="us-east-1")
+s3_client = boto3.client("s3", region_name="us-east-1")
+
+# AWS S3 configuration
+S3_BUCKET = "cti-threat-data-sk-2026"
+S3_KEY = "threats.json"
 
 FAILED_ATTEMPTS = 0
 USERS_FILE = "users.json"
@@ -25,6 +31,23 @@ def load_users():
 def save_users(users):
     with open(USERS_FILE, "w") as file:
         json.dump(users, file, indent=4)
+
+
+# ---------------- AWS S3 THREAT DATA ----------------
+
+def load_threats_from_s3():
+    try:
+        response = s3_client.get_object(
+            Bucket=S3_BUCKET,
+            Key=S3_KEY
+        )
+
+        content = response["Body"].read().decode("utf-8")
+        return json.loads(content)
+
+    except Exception as error:
+        print("S3 error:", error)
+        return []
 
 
 # ---------------- LOGIN PAGE ----------------
@@ -77,7 +100,7 @@ LOGIN_HTML = """
 """
 
 
-# ---------------- REGISTER ----------------
+# ---------------- REGISTER PAGE ----------------
 
 REGISTER_HTML = """
 <!DOCTYPE html>
@@ -187,42 +210,32 @@ CLIENT_HTML = """
 
     <h2>Welcome, {{ username }}</h2>
 
-    <p>Latest published cybersecurity threats:</p>
+    <p>Latest published cybersecurity threats from AWS S3:</p>
 
     <hr>
 
-    <h3>1. Phishing Campaign</h3>
+    {% if threats %}
 
-    <p><strong>Severity:</strong> High</p>
+        {% for threat in threats %}
 
-    <p>
-        Fraudulent emails may attempt to steal usernames,
-        passwords and other sensitive information.
-    </p>
+            <h3>{{ loop.index }}. {{ threat.title }}</h3>
 
-    <hr>
+            <p>
+                <strong>Severity:</strong>
+                {{ threat.severity }}
+            </p>
 
-    <h3>2. Ransomware Threat</h3>
+            <p>{{ threat.description }}</p>
 
-    <p><strong>Severity:</strong> Critical</p>
+            <hr>
 
-    <p>
-        Ransomware may encrypt organisational files
-        and demand payment for recovery.
-    </p>
+        {% endfor %}
 
-    <hr>
+    {% else %}
 
-    <h3>3. Credential Attack</h3>
+        <p>No threat data is currently available.</p>
 
-    <p><strong>Severity:</strong> Medium</p>
-
-    <p>
-        Multiple failed authentication attempts may
-        indicate an attempted account compromise.
-    </p>
-
-    <hr>
+    {% endif %}
 
     <p>
         PB-15: Clients can view published cybersecurity threats
@@ -240,7 +253,6 @@ CLIENT_HTML = """
 
 @app.route("/")
 def home():
-
     return render_template_string(
         LOGIN_HTML,
         message=""
@@ -253,7 +265,6 @@ def home():
 def register():
 
     if request.method == "GET":
-
         return render_template_string(
             REGISTER_HTML,
             message=""
@@ -266,7 +277,6 @@ def register():
     users = load_users()
 
     if username in users:
-
         return render_template_string(
             REGISTER_HTML,
             message="Username already exists."
@@ -317,12 +327,16 @@ def login():
             # PB-15 Client
             else:
 
+                threats = load_threats_from_s3()
+
                 return render_template_string(
                     CLIENT_HTML,
-                    username=username
+                    username=username,
+                    threats=threats
                 )
 
-    # Failed login
+    # ---------------- FAILED LOGIN ----------------
+
     FAILED_ATTEMPTS += 1
 
     if FAILED_ATTEMPTS >= 3:
@@ -341,25 +355,20 @@ def login():
                 Payload=json.dumps(payload).encode("utf-8")
             )
 
-            message = (
-                "Security Alert: Multiple failed login "
-                "attempts detected!"
-            )
+            print("AWS Lambda security alert invoked successfully.")
 
         except Exception as error:
 
             print("AWS Lambda error:", error)
 
-            message = (
-                "Security Alert: Multiple failed login "
-                "attempts detected!"
-            )
-
         FAILED_ATTEMPTS = 0
 
         return render_template_string(
             LOGIN_HTML,
-            message=message
+            message=(
+                "Security Alert: Multiple failed login "
+                "attempts detected!"
+            )
         )
 
     return render_template_string(
@@ -370,5 +379,5 @@ def login():
 
 # ---------------- RUN APP ----------------
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     app.run(debug=True)
