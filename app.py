@@ -4,7 +4,7 @@ import os
 from flask import Flask, request, render_template_string, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 lambda_client = boto3.client("lambda", region_name="us-east-1")
 
@@ -370,5 +370,5 @@ def login():
 
 # ---------------- RUN APP ----------------
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     app.run(debug=True)
