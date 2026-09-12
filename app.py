@@ -183,6 +183,60 @@ ADMIN_HTML = """
 
     <hr>
 
+    <h3>Critical CVE Detection</h3>
+
+    <p>
+        Scan the National Vulnerability Database for
+        critical cybersecurity vulnerabilities.
+    </p>
+
+    <form method="POST" action="/scan-cves">
+
+        <input
+            type="hidden"
+            name="username"
+            value="{{ username }}"
+        >
+
+        <button type="submit">
+            Run Critical CVE Scan
+        </button>
+
+    </form>
+
+    {% if scan_message %}
+
+        <p>
+            <strong>{{ scan_message }}</strong>
+        </p>
+
+    {% endif %}
+
+    {% if scan_results %}
+
+        <hr>
+
+        <h3>CVE Scan Results</h3>
+
+        <p>
+            <strong>Total CVEs Checked:</strong>
+            {{ scan_results.total_checked }}
+        </p>
+
+        <p>
+            <strong>New Critical Alerts Sent:</strong>
+            {{ scan_results.new_alerts_sent }}
+        </p>
+
+        <p>
+            <strong>Duplicate Alerts Skipped:</strong>
+            {{ scan_results.duplicate_alerts_skipped }}
+        </p>
+
+    {% endif %}
+
+    <hr>
+
     <p>
         PB-14: Secure administrator access to the CTI platform.
     </p>
@@ -321,7 +375,9 @@ def login():
 
                 return render_template_string(
                     ADMIN_HTML,
-                    username=username
+                    username=username,
+                    scan_message="",
+                    scan_results=None
                 )
 
             # PB-15 Client
@@ -377,6 +433,74 @@ def login():
     )
 
 
+# ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
+
+# ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
+
+@app.route("/scan-cves", methods=["POST"])
+def scan_cves():
+
+    username = request.form.get("username", "Administrator")
+
+    try:
+        import urllib.request
+
+        lambda_url = "https://kvuo36cwp7v7jpn2jn5u2c4ao40ysvlm.lambda-url.us-east-1.on.aws/"
+
+        with urllib.request.urlopen(
+            lambda_url,
+            timeout=30
+        ) as response:
+
+            response_payload = json.loads(
+                response.read().decode("utf-8")
+            )
+
+        print("CVE Lambda response:", response_payload)
+
+        # Function URL may return Lambda body directly
+        if "statusCode" in response_payload:
+
+            if response_payload["statusCode"] != 200:
+                return render_template_string(
+                    ADMIN_HTML,
+                    username=username,
+                    scan_message="CVE scan returned an error.",
+                    scan_results=None
+                )
+
+            scan_results = response_payload.get("body", {})
+
+            if isinstance(scan_results, str):
+                scan_results = json.loads(scan_results)
+
+        else:
+            # Direct response from Lambda Function URL
+            scan_results = response_payload
+
+        # Calculate total if it is not included
+        if "total_checked" not in scan_results:
+            scan_results["total_checked"] = len(
+                scan_results.get("vulnerabilities", [])
+            )
+
+        return render_template_string(
+            ADMIN_HTML,
+            username=username,
+            scan_message="Critical CVE scan completed successfully.",
+            scan_results=scan_results
+        )
+
+    except Exception as error:
+
+        print("CVE Lambda error:", error)
+
+        return render_template_string(
+            ADMIN_HTML,
+            username=username,
+            scan_message="CVE Scan Error: " + str(error),
+            scan_results=None
+        )
 # ---------------- RUN APP ----------------
 
 if __name__ == "__main__":
