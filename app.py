@@ -1,7 +1,7 @@
 import boto3
 import json
 import os
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import Flask, request, render_template_string, render_template,redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -476,7 +476,10 @@ def login():
     )
 
 
-# ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
+# ---------------- THREAT SEARCH ----------------
+@app.route("/threat-search")
+def threat_search():
+    return render_template("threat-search.html")
 
 # ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
 

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Threat Search</title>
+</head>
+
+<body>
+
+    <h1>Search Published Threats</h1>
+
+    <input type="text" id="keyword" placeholder="Keyword">
+    <br><br>
+
+    <label for="severity">Severity:</label>
+
+    <select id="severity">
+        <option value="">All</option>
+        <option value="CRITICAL">Critical</option>
+        <option value="HIGH">High</option>
+        <option value="MEDIUM">Medium</option>
+        <option value="LOW">Low</option>
+    </select>
+
+    <br><br>
+
+    <button id="searchBtn">Search</button>
+
+    <p id="status"></p>
+
+    <div id="results"></div>
+
+
+    <script>
+        document.getElementById("searchBtn").addEventListener("click", async function () {
+
+            const keyword = document.getElementById("keyword").value;
+            const severity = document.getElementById("severity").value;
+
+            const status = document.getElementById("status");
+            const resultsDiv = document.getElementById("results");
+
+            const apiUrl = "https://2ss5f8hig2.execute-api.us-east-1.amazonaws.com/default/ThreatSearchHandler";
+
+            const url =
+                apiUrl +
+                "?keyword=" + encodeURIComponent(keyword) +
+                "&severity=" + encodeURIComponent(severity);
+
+            status.innerText = "Searching...";
+            resultsDiv.innerHTML = "";
+
+            try {
+
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    throw new Error("HTTP error: " + response.status);
+                }
+
+                const data = await response.json();
+
+                status.innerText = "";
+
+                if (data.length === 0) {
+                    resultsDiv.innerHTML = "<p>No threats found.</p>";
+                    return;
+                }
+
+                data.forEach(function (item) {
+
+                    resultsDiv.innerHTML += `
+                        <hr>
+
+                        <h3>${item.cve_id}</h3>
+
+                        <p>
+                            <strong>Severity:</strong>
+                            ${item.severity}
+                        </p>
+
+                        <p>
+                            <strong>CVSS Score:</strong>
+                            ${item.cvss_score}
+                        </p>
+
+                        <p>
+                            <strong>Description:</strong>
+                            ${item.description}
+                        </p>
+                    `;
+                });
+
+            } catch (error) {
+
+                status.innerText = "Search failed.";
+
+                console.error(error);
+            }
+        });
+    </script>
+
+</body>
+</html>
