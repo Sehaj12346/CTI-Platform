@@ -1,10 +1,11 @@
 import boto3
 import json
 import os
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import Flask, request, render_template_string, render_template,redirect, url_for,session
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY")
 
 # AWS clients
 lambda_client = boto3.client("lambda", region_name="us-east-1")
@@ -16,6 +17,9 @@ S3_KEY = "threats.json"
 
 FAILED_ATTEMPTS = 0
 USERS_FILE = "users.json"
+
+#Admin reference
+ADMIN_REFERENCE = os.environ.get("ADMIN_REFERENCE")
 
 
 # ---------------- USERS ----------------
@@ -36,6 +40,7 @@ def save_users(users):
 # ---------------- AWS S3 THREAT DATA ----------------
 
 def load_threats_from_s3():
+    print("Trying to load threats from S3...")
     try:
         response = s3_client.get_object(
             Bucket=S3_BUCKET,
@@ -43,6 +48,7 @@ def load_threats_from_s3():
         )
 
         content = response["Body"].read().decode("utf-8")
+        print("S3 load successful")
         return json.loads(content)
 
     except Exception as error:
@@ -135,12 +141,26 @@ REGISTER_HTML = """
 
         <label>Account Type:</label>
 
-        <select name="role" required>
+        <select name="role" id="role" required>
             <option value="client">Client</option>
             <option value="admin">Administrator</option>
         </select>
 
         <br><br>
+
+        <div id="adminReferenceSection" style="display:none;">
+          
+             <label for="admin_reference">Enter Admin Reference:</label>
+
+             <input
+                type="password"
+                name="admin_reference"
+                id="admin_reference"
+             >
+             <br><br>
+        </div>
+
+
 
         <button type="submit">Register</button>
 
@@ -149,6 +169,21 @@ REGISTER_HTML = """
     <p>{{ message }}</p>
 
     <a href="/">Back to Login</a>
+
+    <script>
+        const roleSelect = document.getElementById("role");
+        const adminReferenceSection =
+             document.getElementById("adminReferenceSection");
+
+        roleSelect.addEventListener("change", function () {
+            if (this.value === "admin") {
+                adminReferenceSection.style.display = "block";
+            } else{
+                 adminReferenceSection.style.display = "none";
+            }
+
+        });
+    </script>
 
 </body>
 </html>
@@ -296,6 +331,17 @@ CLIENT_HTML = """
         and stay informed about current risks.
     </p>
 
+    <br>
+
+    <a href="/threat-search">Search Threats</a>
+
+    <br><br>
+
+    <a href="/support">Support Request</a>
+
+<br><br>
+    
+
     <a href="/">Logout</a>
 
 </body>
@@ -313,6 +359,62 @@ def home():
     )
 
 
+# ---------------- CLIENT PORTAL ----------------
+
+@app.route("/client")
+def client_portal():
+
+    if session.get("role") != "client":
+        return redirect(url_for("home"))
+
+    threats = load_threats_from_s3()
+
+    return render_template_string(
+        CLIENT_HTML,
+        username=session["username"],
+        threats=threats
+    )
+
+# ---------------- ADMIN PORTAL ----------------
+
+@app.route("/admin")
+def admin_portal():
+
+    if "role" not in session:
+        return redirect(url_for("home"))
+
+    if session.get("role") != "admin":
+
+        import urllib.request
+        import urllib.parse
+
+        try:
+            params = urllib.parse.urlencode({
+            "role": session.get("role", "unknown"),
+            "requested_page": "admin"
+            })
+
+            alert_url = (
+                "https://ym8icbwmok.execute-api.us-east-1.amazonaws.com/"
+                "default/UnauthorizedAccessCheck?"
+                +params
+            )
+
+            urllib.request.urlopen(alert_url, timeout=10)
+
+        except Exception as error:
+             print("Unauthorized access alert error:", error)
+
+             
+        return "Unauthorized access.", 403
+
+    return render_template_string(
+        ADMIN_HTML,
+        username=session["username"],
+        scan_message="",
+        scan_results=None
+    )
+
 # ---------------- REGISTER ROUTE ----------------
 
 @app.route("/register", methods=["GET", "POST"])
@@ -327,6 +429,17 @@ def register():
     username = request.form["username"]
     password = request.form["password"]
     role = request.form["role"]
+
+    if role == "admin":
+         admin_reference = request.form.get("admin_reference", "")
+
+
+
+         if admin_reference != ADMIN_REFERENCE:
+             return render_template_string(
+                 REGISTER_HTML,
+                 message="Invalid Admin Reference."
+             )
 
     users = load_users()
 
@@ -369,27 +482,18 @@ def login():
             FAILED_ATTEMPTS = 0
 
             role = users[username].get("role", "client")
+            session["username"] = username
+            session["role"] = role
 
             # PB-14 Administrator
             if role == "admin":
 
-                return render_template_string(
-                    ADMIN_HTML,
-                    username=username,
-                    scan_message="",
-                    scan_results=None
-                )
+                return redirect(url_for("admin_portal"))
 
             # PB-15 Client
             else:
+                 return redirect(url_for("client_portal"))
 
-                threats = load_threats_from_s3()
-
-                return render_template_string(
-                    CLIENT_HTML,
-                    username=username,
-                    threats=threats
-                )
 
     # ---------------- FAILED LOGIN ----------------
 
@@ -433,7 +537,20 @@ def login():
     )
 
 
-# ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
+
+# ---------------- THREAT SEARCH ----------------
+
+@app.route("/threat-search")
+def threat_search():
+    return render_template("threat-search.html")
+
+
+# ---------------- SUPPORT REQUEST ----------------
+
+@app.route("/support")
+def support():
+    return render_template("support.html")
+
 
 # ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
 

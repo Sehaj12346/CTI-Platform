@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CTI Support Request</title>
+</head>
+
+<body>
+
+    <h1>Threat Enquiry / Support Request</h1>
+
+    <input type="text" id="name" placeholder="Name">
+    <br><br>
+
+    <input type="email" id="email" placeholder="Email">
+    <br><br>
+
+    <input type="text" id="subject" placeholder="Subject">
+    <br><br>
+
+    <textarea id="message" placeholder="Describe your enquiry"></textarea>
+    <br><br>
+
+    <button id="submitBtn">Submit Request</button>
+
+    <p id="result"></p>
+
+    <br>
+
+    <button onclick="window.location.href='/client'">
+        Back to Client Portal
+    </button>
+
+    <script>
+    document.getElementById("submitBtn").addEventListener("click", async function () {
+
+        const name = document.getElementById("name").value;
+        const email = document.getElementById("email").value;
+        const subject = document.getElementById("subject").value;
+        const message = document.getElementById("message").value;
+
+        const apiUrl = "https://bo338k9gei.execute-api.us-east-1.amazonaws.com/default/SupportRequestHandler";
+
+        const url =
+            apiUrl +
+            "?name=" + encodeURIComponent(name) +
+            "&email=" + encodeURIComponent(email) +
+            "&subject=" + encodeURIComponent(subject) +
+            "&message=" + encodeURIComponent(message);
+
+        const result = document.getElementById("result");
+
+        result.innerText = "Submitting...";
+
+        try {
+
+            const response = await fetch(url);
+
+            if (!response.ok) {
+                throw new Error("HTTP error: " + response.status);
+            }
+
+            const responseText = await response.text();
+
+            result.innerText =
+                responseText || "Your request has been submitted successfully.";
+
+            document.getElementById("name").value = "";
+            document.getElementById("email").value = "";
+            document.getElementById("subject").value = "";
+            document.getElementById("message").value = "";
+
+        } catch (error) {
+
+            result.innerText = "Request submission failed.";
+
+            console.error(error);
+        }
+
+    });
+    </script>
+
+</body>
+</html>
