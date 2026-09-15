@@ -24,8 +24,14 @@
 
     <p id="result"></p>
 
+    <br>
+
+    <button onclick="window.location.href='/client'">
+        Back to Client Portal
+    </button>
+
     <script>
-    document.getElementById("submitBtn").addEventListener("click", function () {
+    document.getElementById("submitBtn").addEventListener("click", async function () {
 
         const name = document.getElementById("name").value;
         const email = document.getElementById("email").value;
@@ -41,9 +47,37 @@
             "&subject=" + encodeURIComponent(subject) +
             "&message=" + encodeURIComponent(message);
 
-        window.location.href = url;
+        const result = document.getElementById("result");
+
+        result.innerText = "Submitting...";
+
+        try {
+
+            const response = await fetch(url);
+
+            if (!response.ok) {
+                throw new Error("HTTP error: " + response.status);
+            }
+
+            const responseText = await response.text();
+
+            result.innerText =
+                responseText || "Your request has been submitted successfully.";
+
+            document.getElementById("name").value = "";
+            document.getElementById("email").value = "";
+            document.getElementById("subject").value = "";
+            document.getElementById("message").value = "";
+
+        } catch (error) {
+
+            result.innerText = "Request submission failed.";
+
+            console.error(error);
+        }
+
     });
-</script>
+    </script>
 
 </body>
 </html>

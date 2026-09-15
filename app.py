@@ -1,10 +1,11 @@
 import boto3
 import json
 import os
-from flask import Flask, request, render_template_string, render_template,redirect, url_for
+from flask import Flask, request, render_template_string, render_template,redirect, url_for,session
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY")
 
 # AWS clients
 lambda_client = boto3.client("lambda", region_name="us-east-1")
@@ -39,6 +40,7 @@ def save_users(users):
 # ---------------- AWS S3 THREAT DATA ----------------
 
 def load_threats_from_s3():
+    print("Trying to load threats from S3...")
     try:
         response = s3_client.get_object(
             Bucket=S3_BUCKET,
@@ -46,6 +48,7 @@ def load_threats_from_s3():
         )
 
         content = response["Body"].read().decode("utf-8")
+        print("S3 load successful")
         return json.loads(content)
 
     except Exception as error:
@@ -328,6 +331,17 @@ CLIENT_HTML = """
         and stay informed about current risks.
     </p>
 
+    <br>
+
+    <a href="/threat-search">Search Threats</a>
+
+    <br><br>
+
+    <a href="/support">Support Request</a>
+
+<br><br>
+    
+
     <a href="/">Logout</a>
 
 </body>
@@ -344,6 +358,22 @@ def home():
         message=""
     )
 
+
+# ---------------- CLIENT PORTAL ----------------
+
+@app.route("/client")
+def client_portal():
+
+    if session.get("role") != "client":
+        return redirect(url_for("home"))
+
+    threats = load_threats_from_s3()
+
+    return render_template_string(
+        CLIENT_HTML,
+        username=session["username"],
+        threats=threats
+    )
 
 # ---------------- REGISTER ROUTE ----------------
 
@@ -412,6 +442,8 @@ def login():
             FAILED_ATTEMPTS = 0
 
             role = users[username].get("role", "client")
+            session["username"] = username
+            session["role"] = role
 
             # PB-14 Administrator
             if role == "admin":
@@ -425,14 +457,8 @@ def login():
 
             # PB-15 Client
             else:
+                 return redirect(url_for("client_portal"))
 
-                threats = load_threats_from_s3()
-
-                return render_template_string(
-                    CLIENT_HTML,
-                    username=username,
-                    threats=threats
-                )
 
     # ---------------- FAILED LOGIN ----------------
 
@@ -476,16 +502,20 @@ def login():
     )
 
 
+
 # ---------------- THREAT SEARCH ----------------
+
 @app.route("/threat-search")
 def threat_search():
     return render_template("threat-search.html")
+
 
 # ---------------- SUPPORT REQUEST ----------------
 
 @app.route("/support")
 def support():
     return render_template("support.html")
+
 
 # ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
 
