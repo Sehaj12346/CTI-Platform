@@ -481,6 +481,12 @@ def login():
 def threat_search():
     return render_template("threat-search.html")
 
+# ---------------- SUPPORT REQUEST ----------------
+
+@app.route("/support")
+def support():
+    return render_template("support.html")
+
 # ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
 
 @app.route("/scan-cves", methods=["POST"])
