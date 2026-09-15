@@ -17,6 +17,9 @@ S3_KEY = "threats.json"
 FAILED_ATTEMPTS = 0
 USERS_FILE = "users.json"
 
+#Admin reference
+ADMIN_REFERENCE = os.environ.get("ADMIN_REFERENCE")
+
 
 # ---------------- USERS ----------------
 
@@ -135,12 +138,26 @@ REGISTER_HTML = """
 
         <label>Account Type:</label>
 
-        <select name="role" required>
+        <select name="role" id="role" required>
             <option value="client">Client</option>
             <option value="admin">Administrator</option>
         </select>
 
         <br><br>
+
+        <div id="adminReferenceSection" style="display:none;">
+          
+             <label for="admin_reference">Enter Admin Reference:</label>
+
+             <input
+                type="password"
+                name="admin_reference"
+                id="admin_reference"
+             >
+             <br><br>
+        </div>
+
+
 
         <button type="submit">Register</button>
 
@@ -149,6 +166,21 @@ REGISTER_HTML = """
     <p>{{ message }}</p>
 
     <a href="/">Back to Login</a>
+
+    <script>
+        const roleSelect = document.getElementById("role");
+        const adminReferenceSection =
+             document.getElementById("adminReferenceSection");
+
+        roleSelect.addEventListener("change", function () {
+            if (this.value === "admin") {
+                adminReferenceSection.style.display = "block";
+            } else{
+                 adminReferenceSection.style.display = "none";
+            }
+
+        });
+    </script>
 
 </body>
 </html>
@@ -327,6 +359,17 @@ def register():
     username = request.form["username"]
     password = request.form["password"]
     role = request.form["role"]
+
+    if role == "admin":
+         admin_reference = request.form.get("admin_reference", "")
+
+
+
+         if admin_reference != ADMIN_REFERENCE:
+             return render_template_string(
+                 REGISTER_HTML,
+                 message="Invalid Admin Reference."
+             )
 
     users = load_users()
 
