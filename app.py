@@ -375,6 +375,46 @@ def client_portal():
         threats=threats
     )
 
+# ---------------- ADMIN PORTAL ----------------
+
+@app.route("/admin")
+def admin_portal():
+
+    if "role" not in session:
+        return redirect(url_for("home"))
+
+    if session.get("role") != "admin":
+
+        import urllib.request
+        import urllib.parse
+
+        try:
+            params = urllib.parse.urlencode({
+            "role": session.get("role", "unknown"),
+            "requested_page": "admin"
+            })
+
+            alert_url = (
+                "https://ym8icbwmok.execute-api.us-east-1.amazonaws.com/"
+                "default/UnauthorizedAccessCheck?"
+                +params
+            )
+
+            urllib.request.urlopen(alert_url, timeout=10)
+
+        except Exception as error:
+             print("Unauthorized access alert error:", error)
+
+             
+        return "Unauthorized access.", 403
+
+    return render_template_string(
+        ADMIN_HTML,
+        username=session["username"],
+        scan_message="",
+        scan_results=None
+    )
+
 # ---------------- REGISTER ROUTE ----------------
 
 @app.route("/register", methods=["GET", "POST"])
@@ -448,12 +488,7 @@ def login():
             # PB-14 Administrator
             if role == "admin":
 
-                return render_template_string(
-                    ADMIN_HTML,
-                    username=username,
-                    scan_message="",
-                    scan_results=None
-                )
+                return redirect(url_for("admin_portal"))
 
             # PB-15 Client
             else:
