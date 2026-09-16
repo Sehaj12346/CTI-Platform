@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTI Platform — Threat Intelligence</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0b1120;
+    color: #c8d1dc;
+    min-height: 100vh;
+  }
+
+  /* ── Subtle grid bg ─── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      linear-gradient(rgba(59,130,246,.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(59,130,246,.03) 1px, transparent 1px);
+    background-size: 44px 44px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .page { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+  /* ── Header ─── */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid #1e293b;
+  }
+  .logo {
+    background: rgba(59,130,246,.12);
+    border: 1px solid rgba(59,130,246,.25);
+    border-radius: 10px;
+    padding: .6rem .9rem;
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    color: #3b82f6;
+    text-transform: uppercase;
+  }
+  .header h1 { font-size: 1.1rem; font-weight: 700; color: #e2e8f0; }
+  .header p  { font-size: .72rem; color: #64748b; }
+  .badge {
+    margin-left: auto;
+    background: rgba(34,197,94,.08);
+    border: 1px solid rgba(34,197,94,.2);
+    border-radius: 20px;
+    padding: .25rem .8rem;
+    font-size: .7rem;
+    color: #4ade80;
+    font-weight: 600;
+  }
+
+  /* ── Query panel ─── */
+  .query-panel {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .query-panel h2 {
+    font-size: .8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: #64748b;
+    margin-bottom: 1rem;
+  }
+
+  .controls {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
+
+  .control-group { display: flex; flex-direction: column; gap: .3rem; }
+  .control-group label { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
+
+  select {
+    padding: .55rem .8rem;
+    font-family: inherit;
+    font-size: .82rem;
+    color: #e2e8f0;
+    background: #0b1120;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    outline: none;
+    cursor: pointer;
+    min-width: 160px;
+  }
+  select:focus { border-color: #3b82f6; }
+
+  .btn-fetch {
+    padding: .6rem 1.6rem;
+    font-family: inherit;
+    font-size: .82rem;
+    font-weight: 600;
+    color: #fff;
+    background: #3b82f6;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background .2s, transform .1s;
+    white-space: nowrap;
+  }
+  .btn-fetch:hover { background: #2563eb; }
+  .btn-fetch:active { transform: scale(.97); }
+  .btn-fetch:disabled { background: #374151; color: #6b7280; cursor: not-allowed; transform: none; }
+
+  /* ── AWS flow indicator ─── */
+  .flow-bar {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+    padding: .6rem .8rem;
+    background: rgba(59,130,246,.04);
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    font-size: .7rem;
+    color: #64748b;
+  }
+  .flow-step {
+    padding: .2rem .55rem;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: .68rem;
+  }
+  .flow-step.website { background: rgba(59,130,246,.12); color: #93c5fd; }
+  .flow-step.api     { background: rgba(124,58,237,.12); color: #c4b5fd; }
+  .flow-step.lambda  { background: rgba(234,88,12,.12);  color: #fdba74; }
+  .flow-step.result  { background: rgba(34,197,94,.12);  color: #4ade80; }
+  .flow-arrow { color: #374151; }
+
+  /* ── Status strip ─── */
+  #statusBar {
+    margin-top: 1rem;
+    padding: .6rem .8rem;
+    border-radius: 6px;
+    font-size: .75rem;
+    display: none;
+  }
+  #statusBar.loading { display: block; background: rgba(234,88,12,.06); border: 1px solid rgba(234,88,12,.2); color: #fdba74; }
+  #statusBar.success { display: block; background: rgba(34,197,94,.06); border: 1px solid rgba(34,197,94,.2); color: #4ade80; }
+  #statusBar.error   { display: block; background: rgba(239,68,68,.06); border: 1px solid rgba(239,68,68,.2); color: #fca5a5; }
+
+  /* ── Summary cards ─── */
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .summary-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 1rem;
+    text-align: center;
+  }
+  .summary-card .num {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: .3rem;
+  }
+  .summary-card .lbl { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
+  .summary-card.critical .num { color: #ef4444; }
+  .summary-card.high     .num { color: #f97316; }
+  .summary-card.medium   .num { color: #eab308; }
+  .summary-card.total    .num { color: #3b82f6; }
+
+  /* ── Threat cards ─── */
+  .threats-panel { display: flex; flex-direction: column; gap: .85rem; }
+  .threat-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 1.1rem 1.2rem;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 1rem;
+    align-items: start;
+  }
+  .threat-card:hover { border-color: #334155; }
+
+  .sev-badge {
+    padding: .25rem .6rem;
+    border-radius: 5px;
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    margin-top: .15rem;
+  }
+  .sev-CRITICAL { background: rgba(239,68,68,.12);  color: #ef4444; border: 1px solid rgba(239,68,68,.2); }
+  .sev-HIGH     { background: rgba(249,115,22,.12); color: #f97316; border: 1px solid rgba(249,115,22,.2); }
+  .sev-MEDIUM   { background: rgba(234,179,8,.12);  color: #eab308; border: 1px solid rgba(234,179,8,.2); }
+  .sev-LOW      { background: rgba(34,197,94,.12);  color: #22c55e; border: 1px solid rgba(34,197,94,.2); }
+  .sev-UNKNOWN  { background: rgba(100,116,139,.12);color: #64748b; border: 1px solid #334155; }
+
+  .threat-body .cve-id { font-size: .85rem; font-weight: 700; color: #e2e8f0; margin-bottom: .3rem; }
+  .threat-body .desc   { font-size: .75rem; color: #94a3b8; line-height: 1.5; margin-bottom: .5rem; }
+  .threat-body .action { font-size: .7rem; color: #60a5fa; }
+
+  .threat-meta { text-align: right; }
+  .cvss-score {
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .cvss-label { font-size: .62rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+  .pub-date   { font-size: .65rem; color: #475569; margin-top: .4rem; }
+
+  /* ── CloudWatch log strip ─── */
+  .log-panel {
+    background: #0d1117;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 1rem;
+    margin-top: 1.5rem;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  .log-panel h3 {
+    font-size: .65rem;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: #4b5563;
+    margin-bottom: .6rem;
+    font-family: 'Segoe UI', sans-serif;
+  }
+  .log-line {
+    font-size: .68rem;
+    padding: .18rem 0;
+    color: #4ade80;
+    border-bottom: 1px solid #111827;
+  }
+  .log-line .ts  { color: #374151; margin-right: .5rem; }
+  .log-line.warn { color: #fbbf24; }
+  .log-line.info { color: #60a5fa; }
+
+  /* ── Footer ─── */
+  .footer {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid #1e293b;
+    text-align: center;
+    font-size: .65rem;
+    color: #374151;
+  }
+
+  @media (max-width: 600px) {
+    .threat-card { grid-template-columns: 1fr; }
+    .threat-meta { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── Header ──────────────────────────────── -->
+  <div class="header">
+    <div class="logo">CTI</div>
+    <div>
+      <h1>Threat Intelligence Dashboard</h1>
+      <p>Cloud-Based CTI Platform &mdash; Scenario 5: AWS API Gateway + Lambda Processing</p>
+    </div>
+    <div class="badge">&#x25CF; AWS Connected</div>
+  </div>
+
+  <!-- ── Query Panel ─────────────────────────── -->
+  <div class="query-panel">
+    <h2>Query CTI Data via AWS</h2>
+
+    <div class="controls">
+      <div class="control-group">
+        <label>Severity Filter</label>
+        <select id="severityFilter">
+          <option value="ALL">All Severities</option>
+          <option value="CRITICAL">Critical Only</option>
+          <option value="HIGH">High Only</option>
+          <option value="MEDIUM">Medium Only</option>
+          <option value="LOW">Low Only</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label>Results Limit</label>
+        <select id="limitSelect">
+          <option value="5">5 threats</option>
+          <option value="10">10 threats</option>
+          <option value="3">3 threats</option>
+        </select>
+      </div>
+      <button class="btn-fetch" id="fetchBtn" onclick="fetchCTIData()">
+        &#x2601; Fetch &amp; Process CTI Data
+      </button>
+    </div>
+
+    <!-- AWS flow diagram -->
+    <div class="flow-bar">
+      <span>Data Flow:</span>
+      <span class="flow-step website">CTI Website</span>
+      <span class="flow-arrow">&#x2192;</span>
+      <span class="flow-step api">API Gateway</span>
+      <span class="flow-arrow">&#x2192;</span>
+      <span class="flow-step lambda">&#x03BB; Lambda</span>
+      <span class="flow-arrow">&#x2192;</span>
+      <span class="flow-step result">Results Returned</span>
+    </div>
+
+    <div id="statusBar"></div>
+  </div>
+
+  <!-- ── Summary Cards ───────────────────────── -->
+  <div class="summary-grid" id="summaryGrid" style="display:none;">
+    <div class="summary-card total">
+      <div class="num" id="sumTotal">0</div>
+      <div class="lbl">Total Threats</div>
+    </div>
+    <div class="summary-card critical">
+      <div class="num" id="sumCritical">0</div>
+      <div class="lbl">Critical</div>
+    </div>
+    <div class="summary-card high">
+      <div class="num" id="sumHigh">0</div>
+      <div class="lbl">High</div>
+    </div>
+    <div class="summary-card medium">
+      <div class="num" id="sumMedium">0</div>
+      <div class="lbl">Medium</div>
+    </div>
+  </div>
+
+  <!-- ── Threat Results ──────────────────────── -->
+  <div class="threats-panel" id="threatsPanel"></div>
+
+  <!-- ── Lambda Log Viewer ───────────────────── -->
+  <div class="log-panel" id="logPanel" style="display:none;">
+    <h3>&#x1F4CA; Lambda Execution Log (CloudWatch)</h3>
+    <div id="logLines"></div>
+  </div>
+
+  <div class="footer">
+    BIT303 Capstone Project &mdash; CTI Platform &mdash; Scenario 5: AWS API Gateway + Lambda &mdash; 2026
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  UPDATE THIS WITH YOUR API GATEWAY INVOKE URL
+// ============================================================
+const API_ENDPOINT = 'https://k57by3bbm0.execute-api.us-east-1.amazonaws.com/prod/cti';
+// ============================================================
+
+const statusBar    = document.getElementById('statusBar');
+const fetchBtn     = document.getElementById('fetchBtn');
+const summaryGrid  = document.getElementById('summaryGrid');
+const threatsPanel = document.getElementById('threatsPanel');
+const logPanel     = document.getElementById('logPanel');
+const logLines     = document.getElementById('logLines');
+
+function ts() {
+  return new Date().toLocaleTimeString('en-AU', { hour12: false });
+}
+
+function addLog(msg, type = '') {
+  const line = document.createElement('div');
+  line.className = 'log-line ' + type;
+  line.innerHTML = `<span class="ts">[${ts()}]</span>${msg}`;
+  logLines.appendChild(line);
+  logPanel.style.display = 'block';
+}
+
+function setStatus(msg, type) {
+  statusBar.textContent = msg;
+  statusBar.className = type;
+}
+
+function cvssColor(score) {
+  if (score >= 9) return '#ef4444';
+  if (score >= 7) return '#f97316';
+  if (score >= 4) return '#eab308';
+  return '#22c55e';
+}
+
+async function fetchCTIData() {
+  const severity = document.getElementById('severityFilter').value;
+  const limit    = document.getElementById('limitSelect').value;
+
+  // Reset UI
+  threatsPanel.innerHTML = '';
+  logLines.innerHTML = '';
+  summaryGrid.style.display = 'none';
+  logPanel.style.display = 'none';
+  fetchBtn.disabled = true;
+  fetchBtn.textContent = 'Processing...';
+
+  setStatus('Sending request to AWS API Gateway...', 'loading');
+  addLog('CTI data request initiated by Security Analyst', 'info');
+  addLog(`Query: severity=${severity}, limit=${limit}`, 'info');
+  addLog('POST request sent to Amazon API Gateway...', '');
+
+  try {
+    const response = await fetch(API_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query_type: 'latest', severity: severity, limit: parseInt(limit) })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) throw new Error(data.message || 'Lambda returned error');
+
+    addLog('API Gateway forwarded request to AWS Lambda', '');
+    addLog('Lambda function CTI-Data-Processor executing...', '');
+    addLog(`Lambda fetched ${data.threats.length} CVE records`, '');
+    addLog(`Severity processing complete — Critical: ${data.summary.critical_count}, High: ${data.summary.high_count}`, data.summary.critical_count > 0 ? 'warn' : '');
+    addLog('Results returned to CTI website via API Gateway ✔', 'info');
+
+    setStatus(`✅ AWS Lambda processed ${data.summary.total_threats} threats — returned to website via API Gateway`, 'success');
+
+    renderSummary(data.summary);
+    renderThreats(data.threats);
+
+  } catch (err) {
+    setStatus('❌ Error: ' + err.message, 'error');
+    addLog('ERROR: ' + err.message, 'warn');
+    console.error(err);
+  } finally {
+    fetchBtn.disabled = false;
+    fetchBtn.textContent = '☁ Fetch & Process CTI Data';
+  }
+}
+
+function renderSummary(s) {
+  document.getElementById('sumTotal').textContent    = s.total_threats;
+  document.getElementById('sumCritical').textContent = s.critical_count;
+  document.getElementById('sumHigh').textContent     = s.high_count;
+  document.getElementById('sumMedium').textContent   = s.medium_count;
+  summaryGrid.style.display = 'grid';
+}
+
+function renderThreats(threats) {
+  if (threats.length === 0) {
+    threatsPanel.innerHTML = `<div style="text-align:center;color:#64748b;padding:2rem;">No threats matched the selected filter.</div>`;
+    return;
+  }
+
+  threats.forEach(t => {
+    const card = document.createElement('div');
+    card.className = 'threat-card';
+    card.innerHTML = `
+      <div>
+        <div class="sev-badge sev-${t.severity}">${t.severity}</div>
+      </div>
+      <div class="threat-body">
+        <div class="cve-id">${t.cve_id}</div>
+        <div class="desc">${t.description}</div>
+        <div class="action">&#x26A0; ${t.action_required}</div>
+      </div>
+      <div class="threat-meta">
+        <div class="cvss-score" style="color:${cvssColor(t.cvss_score)}">${t.cvss_score.toFixed(1)}</div>
+        <div class="cvss-label">CVSS Score</div>
+        <div class="pub-date">Published<br>${t.published}</div>
+      </div>
+    `;
+    threatsPanel.appendChild(card);
+  });
+}
+</script>
+</body>
+</html>
