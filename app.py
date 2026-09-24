@@ -272,11 +272,23 @@ ADMIN_HTML = """
 
     <hr>
 
-    <p>
-        PB-14: Secure administrator access to the CTI platform.
-    </p>
+   <p>
+    PB-14: Secure administrator access to the CTI platform.
+</p>
 
-    <a href="/">Logout</a>
+<hr>
+
+<h3>Security Log Watch</h3>
+
+<p>
+    Central security monitoring for all CTI platform scenarios.
+</p>
+
+<a href="/log-watch">Open Security Log Watch</a>
+
+<br><br>
+
+<a href="/">Logout</a>
 
 </body>
 </html>
@@ -414,7 +426,75 @@ def admin_portal():
         scan_message="",
         scan_results=None
     )
+# ---------------- SECURITY LOG WATCH ----------------
 
+@app.route("/log-watch")
+def log_watch():
+
+    if session.get("role") != "admin":
+        return redirect(url_for("home"))
+
+    LOG_WATCH_HTML = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CTI Security Log Watch</title>
+    </head>
+
+    <body>
+
+        <h1>CTI Security Log Watch</h1>
+
+        <h2>Central Security Monitoring</h2>
+
+        <p>
+            This dashboard monitors security events generated
+            by the CTI platform scenarios.
+        </p>
+
+        <hr>
+
+        <h3>Scenario 1 - Failed Login Detection</h3>
+
+        <p><strong>Status:</strong> Active</p>
+        <p><strong>Severity:</strong> High</p>
+        <p><strong>Detection:</strong> Multiple failed login attempts</p>
+        <p><strong>Action:</strong> SNS security alert triggered</p>
+        <p><strong>CloudWatch Logging:</strong> Active</p>
+
+        <hr>
+
+        <h3>Scenario 2</h3>
+        <p><strong>Status:</strong> Pending Log Watch connection</p>
+
+        <hr>
+
+        <h3>Scenario 3 - Critical CVE Detection</h3>
+        <p><strong>Status:</strong> Pending Log Watch connection</p>
+
+        <hr>
+
+        <h3>Scenario 4</h3>
+        <p><strong>Status:</strong> Pending Log Watch connection</p>
+
+        <hr>
+
+        <h3>Scenario 5 - CTI Threat Processing</h3>
+        <p><strong>Status:</strong> Pending Log Watch connection</p>
+
+        <hr>
+
+        <p><strong>Overall Monitoring Status:</strong> Active</p>
+
+        <br>
+
+        <a href="/admin">Back to Administrator Portal</a>
+
+    </body>
+    </html>
+    """
+
+    return render_template_string(LOG_WATCH_HTML)
 # ---------------- REGISTER ROUTE ----------------
 
 @app.route("/register", methods=["GET", "POST"])
