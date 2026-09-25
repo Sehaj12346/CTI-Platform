@@ -441,23 +441,28 @@ def log_watch():
     log_events = []
     log_error = None
 
-    try:
-        response = logs_client.filter_log_events(
+  try:
+    streams_response = logs_client.describe_log_streams(
+        logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
+        orderBy="LastEventTime",
+        descending=True,
+        limit=1
+    )
+
+    streams = streams_response.get("logStreams", [])
+
+    if streams:
+        latest_stream = streams[0]["logStreamName"]
+
+        response = logs_client.get_log_events(
             logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
-            limit=50
+            logStreamName=latest_stream,
+            startFromHead=True
         )
 
         events = response.get("events", [])
 
-        # newest logs first
-        events = sorted(
-            events,
-            key=lambda event: event.get("timestamp", 0),
-            reverse=True
-        )
-
         for event in events:
-
             timestamp_ms = event.get("timestamp", 0)
 
             readable_time = datetime.fromtimestamp(
@@ -466,7 +471,6 @@ def log_watch():
 
             message = event.get("message", "").strip()
 
-            # Only display useful CTI security messages
             if (
                 "CTI SECURITY LOG" in message
                 or "Timestamp:" in message
@@ -479,16 +483,14 @@ def log_watch():
                 or "SNS Status:" in message
                 or "Log Status:" in message
             ):
-
                 log_events.append({
                     "timestamp": readable_time,
                     "message": message
                 })
 
-    except Exception as error:
-        log_error = str(error)
-        print("CloudWatch Log Watch error:", error)
-
+except Exception as error:
+    log_error = str(error)
+    print("CloudWatch Log Watch error:", error)
     LOG_WATCH_HTML = """
     <!DOCTYPE html>
     <html>
