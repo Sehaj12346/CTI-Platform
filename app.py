@@ -3,6 +3,7 @@ import json
 import os
 from flask import Flask, request, render_template_string, render_template,redirect, url_for,session
 from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY")
@@ -10,6 +11,7 @@ app.secret_key = os.environ.get("SECRET_KEY")
 # AWS clients
 lambda_client = boto3.client("lambda", region_name="us-east-1")
 s3_client = boto3.client("s3", region_name="us-east-1")
+logs_client = boto3.client("logs", region_name="us-east-1")
 
 # AWS S3 configuration
 S3_BUCKET = "cti-threat-data-sk-2026"
@@ -428,15 +430,69 @@ def admin_portal():
     )
 # ---------------- SECURITY LOG WATCH ----------------
 
+# ---------------- SECURITY LOG WATCH ----------------
+
 @app.route("/log-watch")
 def log_watch():
 
     if session.get("role") != "admin":
         return redirect(url_for("home"))
 
+    log_events = []
+    log_error = None
+
+    try:
+        response = logs_client.filter_log_events(
+            logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
+            limit=50
+        )
+
+        events = response.get("events", [])
+
+        # newest logs first
+        events = sorted(
+            events,
+            key=lambda event: event.get("timestamp", 0),
+            reverse=True
+        )
+
+        for event in events:
+
+            timestamp_ms = event.get("timestamp", 0)
+
+            readable_time = datetime.fromtimestamp(
+                timestamp_ms / 1000
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+            message = event.get("message", "").strip()
+
+            # Only display useful CTI security messages
+            if (
+                "CTI SECURITY LOG" in message
+                or "Timestamp:" in message
+                or "Scenario:" in message
+                or "Username:" in message
+                or "Failed Attempts:" in message
+                or "Severity:" in message
+                or "Event:" in message
+                or "Action:" in message
+                or "SNS Status:" in message
+                or "Log Status:" in message
+            ):
+
+                log_events.append({
+                    "timestamp": readable_time,
+                    "message": message
+                })
+
+    except Exception as error:
+        log_error = str(error)
+        print("CloudWatch Log Watch error:", error)
+
     LOG_WATCH_HTML = """
     <!DOCTYPE html>
     <html>
+
     <head>
         <title>CTI Security Log Watch</title>
     </head>
@@ -462,6 +518,41 @@ def log_watch():
         <p><strong>Action:</strong> SNS security alert triggered</p>
         <p><strong>CloudWatch Logging:</strong> Active</p>
 
+        <h3>Live CloudWatch Security Logs</h3>
+
+        {% if log_error %}
+
+            <p>
+                <strong>CloudWatch Error:</strong>
+                {{ log_error }}
+            </p>
+
+        {% elif log_events %}
+
+            <table border="1" cellpadding="8">
+
+                <tr>
+                    <th>Time</th>
+                    <th>Security Event</th>
+                </tr>
+
+                {% for log in log_events %}
+
+                    <tr>
+                        <td>{{ log.timestamp }}</td>
+                        <td>{{ log.message }}</td>
+                    </tr>
+
+                {% endfor %}
+
+            </table>
+
+        {% else %}
+
+            <p>No Scenario 1 security logs found.</p>
+
+        {% endif %}
+
         <hr>
 
         <h3>Scenario 2</h3>
@@ -484,17 +575,27 @@ def log_watch():
 
         <hr>
 
-        <p><strong>Overall Monitoring Status:</strong> Active</p>
+        <p>
+            <strong>Overall Monitoring Status:</strong>
+            Active
+        </p>
 
         <br>
 
-        <a href="/admin">Back to Administrator Portal</a>
+        <a href="/admin">
+            Back to Administrator Portal
+        </a>
 
     </body>
+
     </html>
     """
 
-    return render_template_string(LOG_WATCH_HTML)
+    return render_template_string(
+        LOG_WATCH_HTML,
+        log_events=log_events,
+        log_error=log_error
+    )
 # ---------------- REGISTER ROUTE ----------------
 
 @app.route("/register", methods=["GET", "POST"])
