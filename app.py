@@ -431,7 +431,6 @@ def admin_portal():
 # ---------------- SECURITY LOG WATCH ----------------
 
 # ---------------- SECURITY LOG WATCH ----------------
-
 @app.route("/log-watch")
 def log_watch():
 
@@ -460,37 +459,38 @@ def log_watch():
                 startFromHead=True
             )
 
-        events = response.get("events", [])
+            events = response.get("events", [])
 
-        for event in events:
-            timestamp_ms = event.get("timestamp", 0)
+            for event in events:
+                timestamp_ms = event.get("timestamp", 0)
 
-            readable_time = datetime.fromtimestamp(
-                timestamp_ms / 1000
-            ).strftime("%Y-%m-%d %H:%M:%S")
+                readable_time = datetime.fromtimestamp(
+                    timestamp_ms / 1000
+                ).strftime("%Y-%m-%d %H:%M:%S")
 
-            message = event.get("message", "").strip()
+                message = event.get("message", "").strip()
 
-            if (
-                "CTI SECURITY LOG" in message
-                or "Timestamp:" in message
-                or "Scenario:" in message
-                or "Username:" in message
-                or "Failed Attempts:" in message
-                or "Severity:" in message
-                or "Event:" in message
-                or "Action:" in message
-                or "SNS Status:" in message
-                or "Log Status:" in message
-            ):
-                log_events.append({
-                    "timestamp": readable_time,
-                    "message": message
-                })
+                if (
+                    "CTI SECURITY LOG" in message
+                    or "Timestamp:" in message
+                    or "Scenario:" in message
+                    or "Username:" in message
+                    or "Failed Attempts:" in message
+                    or "Severity:" in message
+                    or "Event:" in message
+                    or "Action:" in message
+                    or "SNS Status:" in message
+                    or "Log Status:" in message
+                ):
+                    log_events.append({
+                        "timestamp": readable_time,
+                        "message": message
+                    })
 
-except Exception as error:
-    log_error = str(error)
-    print("CloudWatch Log Watch error:", error)
+    except Exception as error:
+        log_error = str(error)
+        print("CloudWatch Log Watch error:", error)
+
     LOG_WATCH_HTML = """
     <!DOCTYPE html>
     <html>
@@ -589,7 +589,6 @@ except Exception as error:
         </a>
 
     </body>
-
     </html>
     """
 
@@ -598,6 +597,7 @@ except Exception as error:
         log_events=log_events,
         log_error=log_error
     )
+
 # ---------------- REGISTER ROUTE ----------------
 
 @app.route("/register", methods=["GET", "POST"])
