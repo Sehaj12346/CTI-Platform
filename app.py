@@ -441,24 +441,24 @@ def log_watch():
     log_events = []
     log_error = None
 
-  try:
-    streams_response = logs_client.describe_log_streams(
-        logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
-        orderBy="LastEventTime",
-        descending=True,
-        limit=1
-    )
-
-    streams = streams_response.get("logStreams", [])
-
-    if streams:
-        latest_stream = streams[0]["logStreamName"]
-
-        response = logs_client.get_log_events(
+    try:
+        streams_response = logs_client.describe_log_streams(
             logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
-            logStreamName=latest_stream,
-            startFromHead=True
+            orderBy="LastEventTime",
+            descending=True,
+            limit=1
         )
+
+        streams = streams_response.get("logStreams", [])
+
+        if streams:
+            latest_stream = streams[0]["logStreamName"]
+
+            response = logs_client.get_log_events(
+                logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
+                logStreamName=latest_stream,
+                startFromHead=True
+            )
 
         events = response.get("events", [])
 
