@@ -1,11 +1,24 @@
 import boto3
 import json
 import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+import imaplib
+import email
+import urllib.request
+import urllib.parse
+from email.header import decode_header
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from flask import Flask, request, render_template_string, render_template,redirect, url_for,session
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
 app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'local-demo-change-me')
 app.secret_key = os.environ.get("SECRET_KEY")
 
 # AWS clients
@@ -19,6 +32,270 @@ S3_KEY = "threats.json"
 
 FAILED_ATTEMPTS = 0
 USERS_FILE = "users.json"
+
+# ---------------- DEMO CVE REMEDIATION ----------------
+# Safe demo: this simulates remediation for one CVE without changing
+# a real WordPress installation.
+DEMO_CVE_ID = "CVE-2026-32558"
+DEMO_PLUGIN = "Affiliate Pro - Affiliate Program for WooCommerce"
+DEMO_AFFECTED_VERSION = "<= 8.9.1"
+DEMO_FIXED_VERSION = "9.0.0 (demo target)"
+
+# ---------------- GMAIL CVE INTAKE + NVD ENRICHMENT ----------------
+CVE_RESULTS_FILE = "cve_results.json"
+REMEDIATION_PLANS_FILE = "remediation_plans.json"
+CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+
+# Project-supplied advisory reference for the demonstrated CVE.
+# This is a local mapping, not a live WPScan API integration.
+ADVISORY_OVERRIDES = {
+    "CVE-2026-14182": {
+        "product": "Customer Email Verification for WooCommerce",
+        "affected_version": "< 3.2.6",
+        "fixed_version": "3.2.6",
+        "advisory_url": (
+            "https://wpscan.com/vulnerability/"
+            "ef4e95a3-6f90-4423-9551-9ac28f7b6291/"
+        ),
+        "advisory_source": "Project-supplied WPScan advisory reference"
+    }
+}
+
+
+def load_cve_results():
+    try:
+        with open(CVE_RESULTS_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+            return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_cve_results(records):
+    with open(CVE_RESULTS_FILE, "w", encoding="utf-8") as file:
+        json.dump(records, file, indent=2, ensure_ascii=False)
+
+
+def decode_mime_header(value):
+    if not value:
+        return ""
+    parts = decode_header(value)
+    return "".join(
+        part.decode(encoding or "utf-8", errors="replace")
+        if isinstance(part, bytes) else part
+        for part, encoding in parts
+    )
+
+
+def scan_gmail_cves():
+    """Read CVE alert emails from Gmail without modifying their read status."""
+    address = os.getenv("GMAIL_ADDRESS")
+    app_password = os.getenv("GMAIL_APP_PASSWORD")
+
+    if not address or not app_password:
+        raise RuntimeError(
+            "Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your local .env file."
+        )
+
+    found = {}
+
+    with imaplib.IMAP4_SSL("imap.gmail.com", 993) as mailbox:
+        mailbox.login(address, app_password)
+        mailbox.select("INBOX", readonly=True)
+
+        status, data = mailbox.search(
+            None, '(OR SUBJECT "CVE" BODY "CVE-")'
+        )
+        if status != "OK":
+            raise RuntimeError("Gmail search failed.")
+
+        for message_id in data[0].split():
+            status, message_data = mailbox.fetch(message_id, "(RFC822)")
+            if status != "OK":
+                continue
+
+            raw_message = next(
+                (
+                    item[1] for item in message_data
+                    if isinstance(item, tuple)
+                ),
+                None
+            )
+            if not raw_message:
+                continue
+
+            message = email.message_from_bytes(raw_message)
+            subject = decode_mime_header(message.get("Subject", ""))
+            body_parts = [subject]
+
+            if message.is_multipart():
+                for part in message.walk():
+                    if (
+                        part.get_content_type() == "text/plain"
+                        and not part.get_filename()
+                    ):
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            body_parts.append(
+                                payload.decode(
+                                    part.get_content_charset() or "utf-8",
+                                    errors="replace"
+                                )
+                            )
+            else:
+                payload = message.get_payload(decode=True)
+                if payload:
+                    body_parts.append(
+                        payload.decode(
+                            message.get_content_charset() or "utf-8",
+                            errors="replace"
+                        )
+                    )
+
+            full_text = "\n".join(body_parts)
+            for cve_id in set(
+                item.upper() for item in CVE_PATTERN.findall(full_text)
+            ):
+                found.setdefault(cve_id, {
+                    "cve_id": cve_id,
+                    "email_subject": subject,
+                    "email_sender": decode_mime_header(
+                        message.get("From", "")
+                    )
+                })
+
+        mailbox.logout()
+
+    return list(found.values())
+
+
+def lookup_nvd_cve(cve_id):
+    """Retrieve CVE details from the public NVD API."""
+    query = urllib.parse.urlencode({"cveId": cve_id})
+    url = (
+        "https://services.nvd.nist.gov/rest/json/cves/2.0?"
+        + query
+    )
+    request_obj = urllib.request.Request(
+        url,
+        headers={"User-Agent": "CTI-Platform-CVE-Portal/1.0"}
+    )
+
+    api_key = os.getenv("NVD_API_KEY")
+    if api_key:
+        request_obj.add_header("apiKey", api_key)
+
+    with urllib.request.urlopen(request_obj, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    items = payload.get("vulnerabilities", [])
+    if not items:
+        return {
+            "cve_id": cve_id,
+            "severity": "UNKNOWN",
+            "assessment": "NVD record not found."
+        }
+
+    cve = items[0].get("cve", {})
+    description = next(
+        (
+            item.get("value", "")
+            for item in cve.get("descriptions", [])
+            if item.get("lang") == "en"
+        ),
+        ""
+    )
+
+    score = None
+    severity = "UNKNOWN"
+    metrics = cve.get("metrics", {})
+    for metric_name in (
+        "cvssMetricV40", "cvssMetricV31",
+        "cvssMetricV30", "cvssMetricV2"
+    ):
+        metric_items = metrics.get(metric_name, [])
+        if metric_items:
+            metric = metric_items[0]
+            cvss = metric.get("cvssData", {})
+            score = cvss.get("baseScore")
+            severity = (
+                cvss.get("baseSeverity")
+                or metric.get("baseSeverity")
+                or severity
+            )
+            break
+
+    return {
+        "cve_id": cve_id,
+        "description": description,
+        "severity": str(severity).upper(),
+        "cvss_score": score,
+        "published": cve.get("published", ""),
+        "references": [
+            item.get("url")
+            for item in cve.get("references", [])
+            if item.get("url")
+        ],
+        "assessment": (
+            "NVD details retrieved. Verify the affected product and "
+            "version against the vendor advisory."
+        )
+    }
+
+
+def process_gmail_cves():
+    """Deduplicate CVE IDs, enrich records, and persist them for the portal."""
+    previous = {
+        record.get("cve_id"): record
+        for record in load_cve_results()
+        if record.get("cve_id")
+    }
+    records = []
+
+    for email_record in scan_gmail_cves():
+        cve_id = email_record["cve_id"]
+        try:
+            record = lookup_nvd_cve(cve_id)
+        except Exception as error:
+            record = {
+                "cve_id": cve_id,
+                "severity": "UNKNOWN",
+                "assessment": "NVD lookup failed: " + str(error)
+            }
+
+        record.update(email_record)
+        advisory = ADVISORY_OVERRIDES.get(cve_id)
+
+        if advisory:
+            record.update(advisory)
+            record["assessment"] = (
+                "Project-supplied advisory matched. Confirm the installed "
+                "plugin and version before applying the update."
+            )
+            record["recommended_action"] = (
+                "Back up and test compatibility, then update to "
+                + advisory["fixed_version"] + " or later."
+            )
+        else:
+            record.setdefault("product", "Not identified")
+            record.setdefault("affected_version", "Not confirmed")
+            record.setdefault("fixed_version", "Not confirmed")
+            record["recommended_action"] = (
+                "Review the vendor advisory and verify the affected "
+                "product/version before applying a fix."
+            )
+
+        record["remediation_status"] = previous.get(
+            cve_id, {}
+        ).get("remediation_status", "REVIEW REQUIRED")
+        record["last_seen_utc"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+        records.append(record)
+
+    save_cve_results(records)
+    return records
+
 
 #Admin reference
 ADMIN_REFERENCE = os.environ.get("ADMIN_REFERENCE")
@@ -270,6 +547,77 @@ ADMIN_HTML = """
             {{ scan_results.duplicate_alerts_skipped }}
         </p>
 
+    {% endif %}
+
+    <hr>
+
+    {% if cve_records %}
+    <hr>
+    <h3>Gmail CVE Alert Details</h3>
+    <p>Unique CVEs found in Gmail alerts and enriched with NVD details.
+       Recommendations require verification; this portal does not patch software.</p>
+    {% for cve in cve_records %}
+    <div style="border:1px solid #aaa;padding:12px;margin:12px 0;">
+        <h4>{{ cve.cve_id }} — {{ cve.severity or 'UNKNOWN' }}
+            (CVSS {{ cve.cvss_score if cve.cvss_score is not none else 'N/A' }})</h4>
+        <p><strong>Product:</strong> {{ cve.product or 'Not identified' }}</p>
+        <p><strong>Affected version:</strong> {{ cve.affected_version or 'Not confirmed' }}</p>
+        <p><strong>Fixed version:</strong> {{ cve.fixed_version or 'Not confirmed' }}</p>
+        <p><strong>Description:</strong> {{ cve.description or 'Unavailable' }}</p>
+        <p><strong>Recommendation:</strong> {{ cve.recommended_action or 'Review vendor advisory.' }}</p>
+        <p><strong>Assessment:</strong> {{ cve.assessment }}</p>
+        <p><strong>Remediation status:</strong> {{ cve.remediation_status }}</p>
+        {% if cve.advisory_url %}
+        <p><a href="{{ cve.advisory_url }}" target="_blank" rel="noopener">View vendor advisory</a></p>
+        {% endif %}
+        {% if cve.references %}
+        <p><strong>NVD references:</strong>
+        {% for ref in cve.references[:3] %}
+            <a href="{{ ref }}" target="_blank" rel="noopener">Reference {{ loop.index }}</a>{% if not loop.last %} | {% endif %}
+        {% endfor %}
+        </p>
+        {% endif %}
+        <form method="POST" action="/remediate-cve">
+            <input type="hidden" name="username" value="{{ username }}">
+            <input type="hidden" name="cve_id" value="{{ cve.cve_id }}">
+            <button type="submit">Record remediation plan</button>
+        </form>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    <h3>Automatic CVE Remediation (Demo)</h3>
+
+    <p>
+        This demo handles one critical CVE:
+        <strong>{{ demo_cve_id }}</strong>
+    </p>
+
+    <p>
+        <strong>Plugin:</strong> {{ demo_plugin }}
+    </p>
+
+    <p>
+        <strong>Affected version:</strong> {{ demo_affected_version }}
+    </p>
+
+    <form method="POST" action="/remediate-cve">
+        <input type="hidden" name="username" value="{{ username }}">
+        <button type="submit">Run Automatic Remediation</button>
+    </form>
+
+    {% if remediation_message %}
+        <p><strong>{{ remediation_message }}</strong></p>
+    {% endif %}
+
+    {% if remediation_result %}
+        <hr>
+        <h4>Remediation Result</h4>
+        <p><strong>CVE:</strong> {{ remediation_result.cve_id }}</p>
+        <p><strong>Plugin:</strong> {{ remediation_result.plugin }}</p>
+        <p><strong>Action:</strong> {{ remediation_result.action }}</p>
+        <p><strong>Status:</strong> {{ remediation_result.status }}</p>
+        <p><strong>Target version:</strong> {{ remediation_result.target_version }}</p>
     {% endif %}
 
     <hr>
@@ -953,7 +1301,18 @@ def login():
             # PB-14 Administrator
             if role == "admin":
 
-                return redirect(url_for("admin_portal"))
+                return render_template_string(
+                    ADMIN_HTML,
+                    username=username,
+                    scan_message="",
+                    scan_results=None,
+                    cve_records=load_cve_results(),
+                    demo_cve_id=DEMO_CVE_ID,
+                    demo_plugin=DEMO_PLUGIN,
+                    demo_affected_version=DEMO_AFFECTED_VERSION,
+                    remediation_message="",
+                    remediation_result=None
+                )
 
             # PB-15 Client
             else:
@@ -1021,69 +1380,139 @@ def support():
 
 @app.route("/scan-cves", methods=["POST"])
 def scan_cves():
-
     username = request.form.get("username", "Administrator")
 
     try:
-        import urllib.request
-
-        lambda_url = "https://kvuo36cwp7v7jpn2jn5u2c4ao40ysvlm.lambda-url.us-east-1.on.aws/"
-
-        with urllib.request.urlopen(
-            lambda_url,
-            timeout=30
-        ) as response:
-
+        # Keep the existing Lambda scan, SNS notification and DynamoDB deduplication.
+        lambda_url = (
+            "https://kvuo36cwp7v7jpn2jn5u2c4ao40ysvlm."
+            "lambda-url.us-east-1.on.aws/"
+        )
+        with urllib.request.urlopen(lambda_url, timeout=60) as response:
             response_payload = json.loads(
                 response.read().decode("utf-8")
             )
 
-        print("CVE Lambda response:", response_payload)
-
-        # Function URL may return Lambda body directly
         if "statusCode" in response_payload:
-
             if response_payload["statusCode"] != 200:
-                return render_template_string(
-                    ADMIN_HTML,
-                    username=username,
-                    scan_message="CVE scan returned an error.",
-                    scan_results=None
-                )
-
+                raise RuntimeError("AWS Lambda CVE scan returned an error.")
             scan_results = response_payload.get("body", {})
-
             if isinstance(scan_results, str):
                 scan_results = json.loads(scan_results)
-
         else:
-            # Direct response from Lambda Function URL
             scan_results = response_payload
 
-        # Calculate total if it is not included
         if "total_checked" not in scan_results:
             scan_results["total_checked"] = len(
                 scan_results.get("vulnerabilities", [])
             )
 
+        # Additionally scan Gmail alert emails, deduplicate, enrich via NVD,
+        # and persist records for display on the admin portal.
+        cve_records = process_gmail_cves()
+
         return render_template_string(
             ADMIN_HTML,
             username=username,
-            scan_message="Critical CVE scan completed successfully.",
-            scan_results=scan_results
+            scan_message=(
+                f"Scan completed. {len(cve_records)} unique CVEs "
+                "processed from Gmail alert emails."
+            ),
+            scan_results=scan_results,
+            cve_records=cve_records,
+            demo_cve_id=DEMO_CVE_ID,
+            demo_plugin=DEMO_PLUGIN,
+            demo_affected_version=DEMO_AFFECTED_VERSION,
+            remediation_message="",
+            remediation_result=None
         )
 
     except Exception as error:
-
-        print("CVE Lambda error:", error)
-
+        print("CVE scan error:", error)
         return render_template_string(
             ADMIN_HTML,
             username=username,
             scan_message="CVE Scan Error: " + str(error),
-            scan_results=None
+            scan_results=None,
+            cve_records=load_cve_results(),
+            demo_cve_id=DEMO_CVE_ID,
+            demo_plugin=DEMO_PLUGIN,
+            demo_affected_version=DEMO_AFFECTED_VERSION,
+            remediation_message="",
+            remediation_result=None
         )
+
+
+# ---------------- DEMO: AUTOMATIC CVE REMEDIATION ----------------
+
+@app.route("/remediate-cve", methods=["POST"])
+def remediate_cve():
+    """Persist a remediation plan; this route does not patch software."""
+    username = request.form.get("username", "Administrator")
+    cve_id = request.form.get("cve_id", DEMO_CVE_ID).strip().upper()
+    records = load_cve_results()
+    record = next((item for item in records if item.get("cve_id", "").upper() == cve_id), None)
+
+    if record is None:
+        message = "CVE not found in saved Gmail scan results. Run the Critical CVE Scan first."
+        remediation_result = None
+    else:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        plan = {
+            "plan_id": f"{cve_id}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+            "cve_id": cve_id,
+            "product": record.get("product") or "Unknown — verify affected asset",
+            "affected_version": record.get("affected_version") or "Unknown — verify installed version",
+            "fixed_version": record.get("fixed_version") or "Not confirmed — review vendor advisory",
+            "action": record.get("recommended_action") or "Review vendor advisory and verify applicability before patching.",
+            "status": "PLAN RECORDED — MANUAL REVIEW / PATCH REQUIRED",
+            "created_at": now,
+            "created_by": username,
+            "execution": "PLAN ONLY — no software was changed"
+        }
+
+        # Keep a durable, separate history of remediation plans.
+        try:
+            plans = json.loads(Path(REMEDIATION_PLANS_FILE).read_text(encoding="utf-8")) if Path(REMEDIATION_PLANS_FILE).exists() else []
+            if not isinstance(plans, list):
+                plans = []
+        except (OSError, json.JSONDecodeError):
+            plans = []
+        plans.append(plan)
+        Path(REMEDIATION_PLANS_FILE).write_text(json.dumps(plans, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Also update the CVE result shown in the dashboard.
+        record["remediation_status"] = plan["status"]
+        record["remediation_action"] = plan["action"]
+        record["remediation_plan_created_at"] = now
+        record["remediation_plan_file"] = REMEDIATION_PLANS_FILE
+        save_cve_results(records)
+
+        message = f"Remediation plan saved to {REMEDIATION_PLANS_FILE}. No software was changed; manual review and patching are still required."
+        remediation_result = {
+            "cve_id": cve_id,
+            "plugin": plan["product"],
+            "action": plan["action"],
+            "status": plan["status"],
+            "target_version": plan["fixed_version"]
+        }
+
+    return render_template_string(
+        ADMIN_HTML,
+        username=username,
+        scan_message="",
+        scan_results=None,
+        cve_records=records,
+        demo_cve_id=DEMO_CVE_ID,
+        demo_plugin=DEMO_PLUGIN,
+        demo_affected_version=DEMO_AFFECTED_VERSION,
+        remediation_message=message,
+        remediation_result=remediation_result
+    )
+
+
 # ---------------- RUN APP ----------------
 
 if __name__ == "__main__":
     app.run(debug=True)
+
