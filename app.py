@@ -280,6 +280,21 @@ ADMIN_HTML = """
 
 <hr>
 
+<hr>
+
+<h3>Automated Vulnerability Monitoring</h3>
+
+<p>
+    Monitor newly published cybersecurity vulnerabilities
+    from the National Vulnerability Database (NVD).
+</p>
+
+<a href="/vulnerability-monitor">
+    Open Vulnerability Monitor
+</a>
+
+<br><br>
+
 <h3>Security Log Watch</h3>
 
 <p>
@@ -293,6 +308,108 @@ ADMIN_HTML = """
 <a href="/">Logout</a>
 
 </body>
+</html>
+"""
+
+
+VULNERABILITY_MONITOR_HTML = """
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Automated Vulnerability Monitoring</title>
+</head>
+
+<body>
+
+    <h1>Automated Vulnerability Monitoring</h1>
+
+    <h2>Welcome, {{ username }}</h2>
+
+    <p>
+        This function retrieves newly published cybersecurity
+        vulnerabilities from the National Vulnerability Database (NVD).
+    </p>
+
+    <hr>
+
+    {% if error %}
+
+        <p>
+            <strong>Error:</strong>
+            {{ error }}
+        </p>
+
+    {% else %}
+
+        <p>
+            <strong>Status:</strong> Active
+        </p>
+
+        <p>
+            <strong>Data Source:</strong>
+            National Vulnerability Database (NVD)
+        </p>
+
+        <p>
+            <strong>Scan Period:</strong>
+            Previous 24 hours
+        </p>
+
+        <p>
+            <strong>Scan Time:</strong>
+            {{ scan_time }}
+        </p>
+
+        <p>
+            <strong>New Vulnerabilities Found:</strong>
+            {{ total_vulnerabilities }}
+        </p>
+
+        <hr>
+
+        <h3>Latest Vulnerabilities</h3>
+
+        {% if vulnerabilities %}
+
+            <table border="1" cellpadding="8">
+
+                <tr>
+                    <th>CVE ID</th>
+                    <th>Published</th>
+                    <th>Description</th>
+                </tr>
+
+                {% for vulnerability in vulnerabilities %}
+
+                    <tr>
+                        <td>{{ vulnerability.cve_id }}</td>
+                        <td>{{ vulnerability.published }}</td>
+                        <td>{{ vulnerability.description }}</td>
+                    </tr>
+
+                {% endfor %}
+
+            </table>
+
+            <p>Showing the first 20 vulnerabilities.</p>
+
+        {% else %}
+
+            <p>No new vulnerabilities found.</p>
+
+        {% endif %}
+
+    {% endif %}
+
+    <br><br>
+
+    <a href="/admin">
+        Back to Administrator Portal
+    </a>
+
+</body>
+
 </html>
 """
 
@@ -428,7 +545,80 @@ def admin_portal():
         scan_message="",
         scan_results=None
     )
-# ---------------- SECURITY LOG WATCH ----------------
+
+# ---------------- AUTOMATED VULNERABILITY MONITOR ----------------
+
+@app.route("/vulnerability-monitor")
+def vulnerability_monitor():
+
+    if session.get("role") != "admin":
+        return redirect(url_for("home"))
+
+    try:
+        import urllib.request
+
+        api_url = "https://5jnc268wm1.execute-api.us-east-1.amazonaws.com/default/Daily-Vulunerability-Monitor"
+
+        with urllib.request.urlopen(
+            api_url,
+            timeout=30
+        ) as response:
+
+            response_data = json.loads(
+                response.read().decode("utf-8")
+            )
+
+        # Handle API Gateway / Lambda response
+        if "body" in response_data:
+
+            body = response_data["body"]
+
+            if isinstance(body, str):
+                body = json.loads(body)
+
+        else:
+            body = response_data
+
+        total_vulnerabilities = body.get(
+            "new_vulnerabilities",
+            0
+        )
+
+        scan_time = body.get(
+            "scan_time",
+            "Unknown"
+        )
+
+        vulnerabilities = body.get(
+            "vulnerabilities",
+            []
+        )
+
+        # Only show first 20 on the webpage
+        vulnerabilities = vulnerabilities[:20]
+
+        return render_template_string(
+            VULNERABILITY_MONITOR_HTML,
+            username=session["username"],
+            total_vulnerabilities=total_vulnerabilities,
+            scan_time=scan_time,
+            vulnerabilities=vulnerabilities,
+            error=None
+        )
+
+    except Exception as error:
+
+        print("Vulnerability Monitor Error:", error)
+
+        return render_template_string(
+            VULNERABILITY_MONITOR_HTML,
+            username=session["username"],
+            total_vulnerabilities=0,
+            scan_time="Unknown",
+            vulnerabilities=[],
+            error=str(error)
+        )
+
 
 # ---------------- SECURITY LOG WATCH ----------------
 @app.route("/log-watch")
@@ -439,6 +629,9 @@ def log_watch():
 
     log_events = []
     log_error = None
+
+    scenario2_events = []
+    scenario2_error = None
 
     try:
         streams_response = logs_client.describe_log_streams(
@@ -491,112 +684,201 @@ def log_watch():
         log_error = str(error)
         print("CloudWatch Log Watch error:", error)
 
-    LOG_WATCH_HTML = """
+
+
+
+# ---------------- SCENARIO 2: VULNERABILITY MONITOR LOGS ----------------
+
+    try:
+        streams_response = logs_client.describe_log_streams(
+            logGroupName="/aws/lambda/Daily-Vulnerability-Monitor",
+            orderBy="LastEventTime",
+            descending=True,
+            limit=1
+        )
+
+        streams = streams_response.get("logStreams", [])
+
+        if streams:
+            latest_stream = streams[0]["logStreamName"]
+
+            response = logs_client.get_log_events(
+                logGroupName="/aws/lambda/Daily-Vulnerability-Monitor",
+                logStreamName=latest_stream,
+                startFromHead=True
+            )
+
+            events = response.get("events", [])
+
+            for event in events:
+                timestamp_ms = event.get("timestamp", 0)
+
+                readable_time = datetime.fromtimestamp(
+                    timestamp_ms / 1000
+                ).strftime("%Y-%m-%d %H:%M:%S")
+
+                message = event.get("message", "").strip()
+
+                if (
+                    "Starting automated vulnerability monitoring" in message
+                    or "Querying NVD" in message
+                    or "New vulnerabilities found" in message
+                ):
+                    scenario2_events.append({
+                        "timestamp": readable_time,
+                        "message": message
+                    })
+
+    except Exception as error:
+        scenario2_error = str(error)
+        print("Scenario 2 CloudWatch error:", error)
+
+        LOG_WATCH_HTML = """
     <!DOCTYPE html>
     <html>
 
-    <head>
-        <title>CTI Security Log Watch</title>
-    </head>
+        <head>
+            <title>CTI Security Log Watch</title>
+        </head>
 
-    <body>
+        <body>
 
-        <h1>CTI Security Log Watch</h1>
+            <h1>CTI Security Log Watch</h1>
 
-        <h2>Central Security Monitoring</h2>
-
-        <p>
-            This dashboard monitors security events generated
-            by the CTI platform scenarios.
-        </p>
-
-        <hr>
-
-        <h3>Scenario 1 - Failed Login Detection</h3>
-
-        <p><strong>Status:</strong> Active</p>
-        <p><strong>Severity:</strong> High</p>
-        <p><strong>Detection:</strong> Multiple failed login attempts</p>
-        <p><strong>Action:</strong> SNS security alert triggered</p>
-        <p><strong>CloudWatch Logging:</strong> Active</p>
-
-        <h3>Live CloudWatch Security Logs</h3>
-
-        {% if log_error %}
+            <h2>Central Security Monitoring</h2>
 
             <p>
-                <strong>CloudWatch Error:</strong>
-                {{ log_error }}
+                This dashboard monitors security events generated
+                by the CTI platform scenarios.
             </p>
 
-        {% elif log_events %}
+            <hr>
 
-            <table border="1" cellpadding="8">
+            <h3>Scenario 1 - Failed Login Detection</h3>
 
-                <tr>
-                    <th>Time</th>
-                    <th>Security Event</th>
-                </tr>
+            <p><strong>Status:</strong> Active</p>
+            <p><strong>Severity:</strong> High</p>
+            <p><strong>Detection:</strong> Multiple failed login attempts</p>
+            <p><strong>Action:</strong> SNS security alert triggered</p>
+            <p><strong>CloudWatch Logging:</strong> Active</p>
 
-                {% for log in log_events %}
+            <h3>Live CloudWatch Security Logs</h3>
+
+            {% if log_error %}
+
+                <p>
+                    <strong>CloudWatch Error:</strong>
+                    {{ log_error }}
+                </p>
+
+            {% elif log_events %}
+
+                <table border="1" cellpadding="8">
 
                     <tr>
-                        <td>{{ log.timestamp }}</td>
-                        <td>{{ log.message }}</td>
+                        <th>Time</th>
+                        <th>Security Event</th>
                     </tr>
 
-                {% endfor %}
+                    {% for log in log_events %}
 
-            </table>
+                        <tr>
+                            <td>{{ log.timestamp }}</td>
+                            <td>{{ log.message }}</td>
+                        </tr>
 
-        {% else %}
+                    {% endfor %}
 
-            <p>No Scenario 1 security logs found.</p>
+                </table>
 
-        {% endif %}
+            {% else %}
 
-        <hr>
+                <p>No Scenario 1 security logs found.</p>
 
-        <h3>Scenario 2</h3>
-        <p><strong>Status:</strong> Pending Log Watch connection</p>
+            {% endif %}
 
-        <hr>
+            <hr>
+            <h3>Scenario 2 - Automated Vulnerability Monitoring</h3>
 
-        <h3>Scenario 3 - Critical CVE Detection</h3>
-        <p><strong>Status:</strong> Pending Log Watch connection</p>
+            <p><strong>Status:</strong> Active</p>
+            <p><strong>Data Source:</strong> National Vulnerability Database (NVD)</p>
+            <p><strong>Monitoring:</strong> Newly published vulnerabilities</p>
+            <p><strong>CloudWatch Logging:</strong> Active</p>
 
-        <hr>
+            <h3>Vulnerability Monitor Logs</h3>
 
-        <h3>Scenario 4</h3>
-        <p><strong>Status:</strong> Pending Log Watch connection</p>
+            {% if scenario2_error %}
 
-        <hr>
+                <p>
+                <strong>CloudWatch Error:</strong>
+                {{ scenario2_error }}
+                </p>
 
-        <h3>Scenario 5 - CTI Threat Processing</h3>
-        <p><strong>Status:</strong> Pending Log Watch connection</p>
+            {% elif scenario2_events %}
 
-        <hr>
+                <table border="1" cellpadding="8">
 
-        <p>
-            <strong>Overall Monitoring Status:</strong>
-            Active
-        </p>
+                    <tr>
+                        <th>Time</th>
+                        <th>Event</th>
+                    </tr>
 
-        <br>
+                    {% for log in scenario2_events %}
 
-        <a href="/admin">
-            Back to Administrator Portal
-        </a>
+                        <tr>
+                            <td>{{ log.timestamp }}</td>
+                            <td>{{ log.message }}</td>
+                        </tr>
 
-    </body>
+                    {% endfor %}
+
+                </table>
+
+            {% else %}
+
+            <p>No Scenario 2 logs found.</p>
+
+            {% endif %}
+
+            <hr>
+
+            <h3>Scenario 3 - Critical CVE Detection</h3>
+            <p><strong>Status:</strong> Pending Log Watch connection</p>
+
+            <hr>
+
+            <h3>Scenario 4</h3>
+            <p><strong>Status:</strong> Pending Log Watch connection</p>
+
+            <hr>
+
+            <h3>Scenario 5 - CTI Threat Processing</h3>
+            <p><strong>Status:</strong> Pending Log Watch connection</p>
+
+            <hr>
+
+            <p>
+                <strong>Overall Monitoring Status:</strong>
+                Active
+            </p>
+
+            <br>
+
+            <a href="/admin">
+                Back to Administrator Portal
+            </a>
+
+        </body>
     </html>
     """
 
-    return render_template_string(
+        return render_template_string(
         LOG_WATCH_HTML,
         log_events=log_events,
-        log_error=log_error
-    )
+        log_error=log_error,
+        scenario2_events=scenario2_events,
+        scenario2_error=scenario2_error
+        )
 
 # ---------------- REGISTER ROUTE ----------------
 
