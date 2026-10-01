@@ -1,4 +1,281 @@
 import json
+import urllib.request
+import urllib.parse
+import boto3
+from datetime import datetime, timedelta, timezone
+
+sns = boto3.client("sns", region_name="us-east-1")
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+
+SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:377174288995:CTI-Critical-CVE-Alerts"
+TABLE_NAME = "CTI-Alerted-CVEs"
+
+table = dynamodb.Table(TABLE_NAME)
+
+
+def get_severity(score):
+    if score == 0:
+        return "None"
+    elif score <= 3.9:
+        return "Low"
+    elif score <= 6.9:
+        return "Medium"
+    elif score <= 8.9:
+        return "High"
+    else:
+        return "Critical"
+
+
+def lambda_handler(event, context):
+
+    # Get CVEs published in the last 30 days
+    end_date = datetime.now(timezone.utc)
+    start_date = end_date - timedelta(days=30)
+
+    start_string = start_date.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
+    end_string = end_date.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
+
+    # Ask NVD specifically for CRITICAL CVEs
+    params = urllib.parse.urlencode({
+        "pubStartDate": start_string,
+        "pubEndDate": end_string,
+        "cvssV3Severity": "CRITICAL",
+        "resultsPerPage": 20
+    })
+
+    url = "https://services.nvd.nist.gov/rest/json/cves/2.0?" + params
+
+    print("Starting recent CRITICAL CVE scan...")
+    print("NVD URL:", url)
+
+    try:
+
+        with urllib.request.urlopen(
+            url,
+            timeout=20
+        ) as response:
+
+            data = json.loads(
+                response.read().decode()
+            )
+
+        vulnerabilities = []
+        new_alerts = 0
+        duplicate_alerts = 0
+
+        for item in data.get("vulnerabilities", []):
+
+            cve = item.get("cve", {})
+
+            cve_id = cve.get("id")
+
+            description = "No description available"
+
+            for desc in cve.get("descriptions", []):
+
+                if desc.get("lang") == "en":
+
+                    description = desc.get("value")
+                    break
+
+            score = None
+
+            metrics = cve.get("metrics", {})
+
+            if metrics.get("cvssMetricV31"):
+
+                score = metrics[
+                    "cvssMetricV31"
+                ][0]["cvssData"]["baseScore"]
+
+            elif metrics.get("cvssMetricV30"):
+
+                score = metrics[
+                    "cvssMetricV30"
+                ][0]["cvssData"]["baseScore"]
+
+            elif metrics.get("cvssMetricV2"):
+
+                score = metrics[
+                    "cvssMetricV2"
+                ][0]["cvssData"]["baseScore"]
+
+            if score is not None:
+
+                severity = get_severity(
+                    float(score)
+                )
+
+            else:
+
+                severity = "Not Available"
+
+            vulnerability = {
+                "cve_id": cve_id,
+                "published": cve.get("published"),
+                "cvss_score": score,
+                "severity": severity,
+                "description": description
+            }
+
+            vulnerabilities.append(
+                vulnerability
+            )
+
+            print(
+                json.dumps(vulnerability)
+            )
+
+            # ------------------------------------------------
+            # ONLY PROCESS CRITICAL CVEs
+            # ------------------------------------------------
+
+            if severity != "Critical":
+                continue
+
+            print(
+                f"Critical CVE found: {cve_id}"
+            )
+
+            # ------------------------------------------------
+            # CHECK DYNAMODB FOR DUPLICATE
+            # ------------------------------------------------
+
+            existing = table.get_item(
+                Key={
+                    "cve_id": cve_id
+                }
+            )
+
+            if "Item" in existing:
+
+                print(
+                    f"Duplicate alert skipped: {cve_id}"
+                )
+
+                duplicate_alerts += 1
+                continue
+
+            # ------------------------------------------------
+            # CREATE ALERT MESSAGE
+            # ------------------------------------------------
+
+            message = f"""
+CRITICAL CVE ALERT
+
+CVE ID: {cve_id}
+Severity: {severity}
+CVSS Score: {score}
+
+Published:
+{cve.get("published")}
+
+Description:
+{description}
+
+Source:
+National Vulnerability Database (NVD)
+
+Action Required:
+Security analyst should investigate this vulnerability immediately.
+"""
+
+            # ------------------------------------------------
+            # SEND SNS EMAIL ALERT
+            # ------------------------------------------------
+
+            sns.publish(
+                TopicArn=SNS_TOPIC_ARN,
+                Subject=f"Critical CVE Detected - {cve_id}",
+                Message=message
+            )
+
+            print(
+                f"SNS alert sent: {cve_id}"
+            )
+
+            # ------------------------------------------------
+            # SAVE ALERTED CVE TO DYNAMODB
+            # ------------------------------------------------
+
+            table.put_item(
+                Item={
+                    "cve_id": cve_id,
+                    "severity": severity,
+                    "cvss_score": str(score),
+                    "published": cve.get(
+                        "published",
+                        ""
+                    ),
+                    "alerted_at": datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                }
+            )
+
+            print(
+                f"Saved to DynamoDB: {cve_id}"
+            )
+
+            new_alerts += 1
+
+        # ----------------------------------------------------
+        # RETURN RESULT TO CTI ADMIN PORTAL
+        # ----------------------------------------------------
+
+        return {
+
+            "statusCode": 200,
+
+            "body": {
+                "message":
+                    "Critical CVE detection completed",
+
+                "total_checked":
+                    len(vulnerabilities),
+
+                "new_alerts_sent":
+                    new_alerts,
+
+                "duplicate_alerts_skipped":
+                    duplicate_alerts,
+
+                "vulnerabilities":
+                    vulnerabilities
+            }
+        }
+
+    except Exception as e:
+
+        print(
+            "ERROR:",
+            str(e)
+        )
+
+        return {
+
+            "statusCode": 500,
+
+            "body": {
+                "message":
+                    "Critical CVE detection failed",
+
+                "error":
+                    str(e),
+
+                "total_checked":
+                    0,
+
+                "new_alerts_sent":
+                    0,
+
+                "duplicate_alerts_skipped":
+                    0,
+
+                "vulnerabilities":
+                    []
+            }
+        }import json
 import boto3
 import datetime
 import urllib.request
