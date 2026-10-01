@@ -19,6 +19,7 @@ S3_KEY = "threats.json"
 
 FAILED_ATTEMPTS = 0
 USERS_FILE = "users.json"
+VULNERABILITY_LOG_FILE = "vulnerability_monitor.log"
 
 #Admin reference
 ADMIN_REFERENCE = os.environ.get("ADMIN_REFERENCE")
@@ -37,6 +38,20 @@ def load_users():
 def save_users(users):
     with open(USERS_FILE, "w") as file:
         json.dump(users, file, indent=4)
+
+def write_vulnerability_log(message):
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with open(
+        VULNERABILITY_LOG_FILE,
+        "a",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(
+            f"{timestamp} | {message}\n"
+        )
 
 
 # ---------------- AWS S3 THREAT DATA ----------------
@@ -589,6 +604,12 @@ def vulnerability_monitor():
             "Unknown"
         )
 
+        write_vulnerability_log(
+            f"Automated vulnerability monitoring completed | "
+            f"Source: NVD | "
+            f"New vulnerabilities: {total_vulnerabilities}"
+        )
+
         vulnerabilities = body.get(
             "vulnerabilities",
             []
@@ -687,53 +708,48 @@ def log_watch():
 
 
 
-# ---------------- SCENARIO 2: VULNERABILITY MONITOR LOGS ----------------
+    # ---------------- SCENARIO 2: VULNERABILITY MONITOR LOGS ----------------
 
     try:
-        streams_response = logs_client.describe_log_streams(
-            logGroupName="/aws/lambda/Daily-Vulnerability-Monitor",
-            orderBy="LastEventTime",
-            descending=True,
-            limit=1
-        )
 
-        streams = streams_response.get("logStreams", [])
+        if os.path.exists(VULNERABILITY_LOG_FILE):
 
-        if streams:
-            latest_stream = streams[0]["logStreamName"]
+            with open(
+                VULNERABILITY_LOG_FILE,
+                "r",
+                encoding="utf-8"
+            ) as file:
 
-            response = logs_client.get_log_events(
-                logGroupName="/aws/lambda/Daily-Vulnerability-Monitor",
-                logStreamName=latest_stream,
-                startFromHead=True
-            )
+                lines = file.readlines()
 
-            events = response.get("events", [])
+            # Show the latest 20 log records
+            for line in reversed(lines[-20:]):
 
-            for event in events:
-                timestamp_ms = event.get("timestamp", 0)
+                line = line.strip()
 
-                readable_time = datetime.fromtimestamp(
-                    timestamp_ms / 1000
-                ).strftime("%Y-%m-%d %H:%M:%S")
+                if " | " in line:
 
-                message = event.get("message", "").strip()
+                    timestamp, message = line.split(
+                        " | ",
+                        1
+                    )
 
-                if (
-                    "Starting automated vulnerability monitoring" in message
-                    or "Querying NVD" in message
-                    or "New vulnerabilities found" in message
-                ):
                     scenario2_events.append({
-                        "timestamp": readable_time,
+                        "timestamp": timestamp,
                         "message": message
                     })
 
     except Exception as error:
-        scenario2_error = str(error)
-        print("Scenario 2 CloudWatch error:", error)
 
-        LOG_WATCH_HTML = """
+        scenario2_error = str(error)
+
+        print(
+            "Scenario 2 Log File Error:",
+            error
+        )
+
+    LOG_WATCH_HTML = """
+
     <!DOCTYPE html>
     <html>
 
@@ -872,7 +888,7 @@ def log_watch():
     </html>
     """
 
-        return render_template_string(
+    return render_template_string(
         LOG_WATCH_HTML,
         log_events=log_events,
         log_error=log_error,
