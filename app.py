@@ -564,6 +564,7 @@ ADMIN_HTML = """
 
     {% endif %}
 
+<br><br>
     <hr>
 
     {% if cve_records %}
@@ -635,13 +636,7 @@ ADMIN_HTML = """
         <p><strong>Target version:</strong> {{ remediation_result.target_version }}</p>
     {% endif %}
 
-    <hr>
-
-   <p>
-    PB-14: Secure administrator access to the CTI platform.
-</p>
-
-<hr>
+<br><br>
 
 <hr>
 
@@ -652,11 +647,13 @@ ADMIN_HTML = """
     from the National Vulnerability Database (NVD).
 </p>
 
-<a href="/vulnerability-monitor">
-    Open Vulnerability Monitor
-</a>
+<form action="/vulnerability-monitor" method="get">
+    <button type="submit">Open Vulnerability Monitor</button>
+</form>
 
 <br><br>
+
+<hr>
 
 <h3>Security Log Watch</h3>
 
@@ -664,7 +661,9 @@ ADMIN_HTML = """
     Central security monitoring for all CTI platform scenarios.
 </p>
 
-<a href="/log-watch">Open Security Log Watch</a>
+<form action="/log-watch" method="get">
+    <button type="submit">Open Security Log Watch</button>
+</form>
 
 <br><br>
 
@@ -694,76 +693,11 @@ VULNERABILITY_MONITOR_HTML = """
         vulnerabilities from the National Vulnerability Database (NVD).
     </p>
 
-    <hr>
+<br><br>
 
-    {% if error %}
-
-        <p>
-            <strong>Error:</strong>
-            {{ error }}
-        </p>
-
-    {% else %}
-
-        <p>
-            <strong>Status:</strong> Active
-        </p>
-
-        <p>
-            <strong>Data Source:</strong>
-            National Vulnerability Database (NVD)
-        </p>
-
-        <p>
-            <strong>Scan Period:</strong>
-            Previous 24 hours
-        </p>
-
-        <p>
-            <strong>Scan Time:</strong>
-            {{ scan_time }}
-        </p>
-
-        <p>
-            <strong>New Vulnerabilities Found:</strong>
-            {{ total_vulnerabilities }}
-        </p>
-
-        <hr>
-
-        <h3>Latest Vulnerabilities</h3>
-
-        {% if vulnerabilities %}
-
-            <table border="1" cellpadding="8">
-
-                <tr>
-                    <th>CVE ID</th>
-                    <th>Published</th>
-                    <th>Description</th>
-                </tr>
-
-                {% for vulnerability in vulnerabilities %}
-
-                    <tr>
-                        <td>{{ vulnerability.cve_id }}</td>
-                        <td>{{ vulnerability.published }}</td>
-                        <td>{{ vulnerability.description }}</td>
-                    </tr>
-
-                {% endfor %}
-
-            </table>
-
-            <p>Showing the first 20 vulnerabilities.</p>
-
-        {% else %}
-
-            <p>No new vulnerabilities found.</p>
-
-        {% endif %}
-
-    {% endif %}
+    <form action="/run-vulnerability-scan" method="get">
+        <button type="submit">Run Vulnerability Scan</button>
+    </form>
 
     <br><br>
 
@@ -776,6 +710,78 @@ VULNERABILITY_MONITOR_HTML = """
 </html>
 """
 
+VULNERABILITY_RESULT_HTML = """
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Vulnerability Scan Result</title>
+</head>
+
+<body>
+
+    <h1>Vulnerability Scan Result</h1>
+
+    <p>
+        <strong>Scan Time:</strong>
+        {{ scan_time }}
+    </p>
+
+    <p>
+        <strong>New Vulnerabilities Found:</strong>
+        {{ total_vulnerabilities }}
+    </p>
+
+    <hr>
+
+    <h3>Latest Vulnerabilities</h3>
+
+    {% if vulnerabilities %}
+
+        <table border="1" cellpadding="8">
+
+            <tr>
+                <th>CVE ID</th>
+                <th>Published</th>
+                <th>Description</th>
+            </tr>
+
+            {% for vulnerability in vulnerabilities %}
+
+                <tr>
+                    <td>{{ vulnerability.cve_id }}</td>
+                    <td>{{ vulnerability.published }}</td>
+                    <td>{{ vulnerability.description }}</td>
+                </tr>
+
+            {% endfor %}
+
+        </table>
+
+        <p>Showing the first 20 vulnerabilities.</p>
+
+    {% else %}
+
+        <p>No new vulnerabilities found.</p>
+
+    {% endif %}
+
+    <br><br>
+
+        <form action="/run-vulnerability-scan" method="get">
+            <button type="submit">Run Again</button>
+        </form>
+
+        <br>
+
+        <form action="/admin" method="get">
+            <button type="submit">Back to Administrator Portal</button>
+        </form>
+
+</body>
+
+</html>
+"""
 
 # ---------------- PB-15 CLIENT PORTAL ----------------
 
@@ -826,8 +832,6 @@ CLIENT_HTML = """
     </p>
 
     <br>
-
-    <a href="/threat-search">Search Threats</a>
 
     <br><br>
 
@@ -917,6 +921,16 @@ def vulnerability_monitor():
     if session.get("role") != "admin":
         return redirect(url_for("home"))
 
+    return render_template_string(
+        VULNERABILITY_MONITOR_HTML
+    )
+
+@app.route("/run-vulnerability-scan")
+def run_vulnerability_scan():
+
+    if session.get("role") != "admin":
+        return redirect(url_for("home"))
+
     try:
         import urllib.request
 
@@ -931,9 +945,7 @@ def vulnerability_monitor():
                 response.read().decode("utf-8")
             )
 
-        # Handle API Gateway / Lambda response
         if "body" in response_data:
-
             body = response_data["body"]
 
             if isinstance(body, str):
@@ -941,6 +953,7 @@ def vulnerability_monitor():
 
         else:
             body = response_data
+
 
         total_vulnerabilities = body.get(
             "new_vulnerabilities",
@@ -952,41 +965,33 @@ def vulnerability_monitor():
             "Unknown"
         )
 
+
         write_vulnerability_log(
             f"Automated vulnerability monitoring completed | "
             f"Source: NVD | "
             f"New vulnerabilities: {total_vulnerabilities}"
         )
 
+
         vulnerabilities = body.get(
             "vulnerabilities",
             []
         )
 
-        # Only show first 20 on the webpage
         vulnerabilities = vulnerabilities[:20]
 
+
         return render_template_string(
-            VULNERABILITY_MONITOR_HTML,
-            username=session["username"],
+            VULNERABILITY_RESULT_HTML,
             total_vulnerabilities=total_vulnerabilities,
             scan_time=scan_time,
-            vulnerabilities=vulnerabilities,
-            error=None
+            vulnerabilities=vulnerabilities
         )
+
 
     except Exception as error:
 
-        print("Vulnerability Monitor Error:", error)
-
-        return render_template_string(
-            VULNERABILITY_MONITOR_HTML,
-            username=session["username"],
-            total_vulnerabilities=0,
-            scan_time="Unknown",
-            vulnerabilities=[],
-            error=str(error)
-        )
+        return f"Error: {error}"
 
 
 # ---------------- SECURITY LOG WATCH ----------------
@@ -1375,14 +1380,6 @@ def login():
         LOGIN_HTML,
         message=f"Invalid login. Failed attempt {FAILED_ATTEMPTS}/3"
     )
-
-
-
-# ---------------- THREAT SEARCH ----------------
-
-@app.route("/threat-search")
-def threat_search():
-    return render_template("threat-search.html")
 
 
 # ---------------- SUPPORT REQUEST ----------------
