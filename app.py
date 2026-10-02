@@ -907,11 +907,17 @@ def admin_portal():
         return "Unauthorized access.", 403
 
     return render_template_string(
-        ADMIN_HTML,
-        username=session["username"],
-        scan_message="",
-        scan_results=None
-    )
+    ADMIN_HTML,
+    username=session["username"],
+    scan_message="",
+    scan_results=None,
+    cve_records=load_cve_results(),
+    demo_cve_id=DEMO_CVE_ID,
+    demo_plugin=DEMO_PLUGIN,
+    demo_affected_version=DEMO_AFFECTED_VERSION,
+    remediation_message="",
+    remediation_result=None
+)
 
 # ---------------- AUTOMATED VULNERABILITY MONITOR ----------------
 
@@ -1321,19 +1327,7 @@ def login():
 
             # PB-14 Administrator
             if role == "admin":
-
-                return render_template_string(
-                    ADMIN_HTML,
-                    username=username,
-                    scan_message="",
-                    scan_results=None,
-                    cve_records=load_cve_results(),
-                    demo_cve_id=DEMO_CVE_ID,
-                    demo_plugin=DEMO_PLUGIN,
-                    demo_affected_version=DEMO_AFFECTED_VERSION,
-                    remediation_message="",
-                    remediation_result=None
-                )
+                return redirect(url_for("admin_portal"))
 
             # PB-15 Client
             else:
