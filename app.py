@@ -1099,7 +1099,7 @@ def run_vulnerability_scan():
 @app.route("/log-watch")
 def log_watch():
 
-    if session.get("role") != "admin":
+        if session.get("role") != "admin":
         return redirect(url_for("home"))
 
     log_events = []
@@ -1107,8 +1107,10 @@ def log_watch():
 
     scenario2_events = []
     scenario2_error = None
- scenario3_events = []
-scenario3_error = None
+
+    scenario3_events = []
+    scenario3_error = None
+
     try:
         streams_response = logs_client.describe_log_streams(
             logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
