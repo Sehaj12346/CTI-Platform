@@ -1102,50 +1102,44 @@ CLIENT_HTML = """
 
 <body>
 
-    <h1>Cybersecurity Threat Intelligence</h1>
+    <h1>CTI Client Portal</h1>
 
     <h2>Welcome, {{ username }}</h2>
 
-    <p>Latest published cybersecurity threats from AWS S3:</p>
+    <p>Client login successful.</p>
 
     <hr>
 
-    {% if threats %}
-
-        {% for threat in threats %}
-
-            <h3>{{ loop.index }}. {{ threat.title }}</h3>
-
-            <p>
-                <strong>Severity:</strong>
-                {{ threat.severity }}
-            </p>
-
-            <p>{{ threat.description }}</p>
-
-            <hr>
-
-        {% endfor %}
-
-    {% else %}
-
-        <p>No threat data is currently available.</p>
-
-    {% endif %}
+    <h3>Threat Intelligence Processing</h3>
 
     <p>
-        PB-15: Clients can view published cybersecurity threats
-        and stay informed about current risks.
+        Retrieve and process cybersecurity threat intelligence
+        using AWS Lambda and the National Vulnerability Database (NVD).
     </p>
 
-    <br>
+    <form action="/cti-dashboard" method="get">
+        <button type="submit">
+            Open Threat Intelligence Dashboard
+        </button>
+    </form>
 
     <br><br>
 
-    <a href="/support">Support Request</a>
+    <hr>
 
-<br><br>
-    
+    <h3>Support Request</h3>
+
+    <p>
+        Submit a support request for cybersecurity assistance.
+    </p>
+
+    <form action="/support" method="get">
+        <button type="submit">
+            Open Support Request
+        </button>
+    </form>
+
+    <br><br>
 
     <a href="/">Logout</a>
 
@@ -1202,12 +1196,9 @@ def client_portal():
     if session.get("role") != "client":
         return redirect(url_for("home"))
 
-    threats = load_threats_from_s3()
-
     return render_template_string(
         CLIENT_HTML,
         username=session["username"],
-        threats=threats
     )
 
 # ---------------- ADMIN PORTAL ----------------
