@@ -1012,7 +1012,8 @@ def log_watch():
 
     scenario2_events = []
     scenario2_error = None
-
+ scenario3_events = []
+scenario3_error = None
     try:
         streams_response = logs_client.describe_log_streams(
             logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
@@ -1083,6 +1084,111 @@ def log_watch():
 
             # Show the latest 20 log records
             for line in reversed(lines[-20:]):
+        return render_template_string(
+            ADMIN_HTML,
+            username=username,
+            scan_message=(
+                f"Scan completed. {len(cve_records)} unique CVEs "
+                "processed from Gmail alert emails."
+            ),
+            scan_results=scan_results,
+            cve_records=cve_records,
+            demo_cve_id=DEMO_CVE_ID,
+            demo_plugin=DEMO_PLUGIN,
+            demo_affected_version=DEMO_AFFECTED_VERSION,
+            remediation_message="",
+            remediation_result=None
+        )
+
+    except Exception as error:
+        print("CVE scan error:", error)
+        return render_template_string(
+            ADMIN_HTML,
+            username=username,
+            scan_message="CVE Scan Error: " + str(error),
+            scan_results=None,
+            cve_records=load_cve_results(),
+            demo_cve_id=DEMO_CVE_ID,
+            demo_plugin=DEMO_PLUGIN,
+            demo_affected_version=DEMO_AFFECTED_VERSION,
+            remediation_message="",
+            remediation_result=None
+        )
+
+
+# ---------------- DEMO: AUTOMATIC CVE REMEDIATION ----------------
+
+@app.route("/remediate-cve", methods=["POST"])
+def remediate_cve():
+    """Persist a remediation plan; this route does not patch software."""
+    username = request.form.get("username", "Administrator")
+    cve_id = request.form.get("cve_id", DEMO_CVE_ID).strip().upper()
+    records = load_cve_results()
+    record = next((item for item in records if item.get("cve_id", "").upper() == cve_id), None)
+
+    if record is None:
+        message = "CVE not found in saved Gmail scan results. Run the Critical CVE Scan first."
+        remediation_result = None
+    else:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        plan = {
+            "plan_id": f"{cve_id}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+            "cve_id": cve_id,
+            "product": record.get("product") or "Unknown — verify affected asset",
+            "affected_version": record.get("affected_version") or "Unknown — verify installed version",
+            "fixed_version": record.get("fixed_version") or "Not confirmed — review vendor advisory",
+            "action": record.get("recommended_action") or "Review vendor advisory and verify applicability before patching.",
+            "status": "PLAN RECORDED — MANUAL REVIEW / PATCH REQUIRED",
+            "created_at": now,
+            "created_by": username,
+            "execution": "PLAN ONLY — no software was changed"
+        }
+
+        # Keep a durable, separate history of remediation plans.
+        try:
+            plans = json.loads(Path(REMEDIATION_PLANS_FILE).read_text(encoding="utf-8")) if Path(REMEDIATION_PLANS_FILE).exists() else []
+            if not isinstance(plans, list):
+                plans = []
+        except (OSError, json.JSONDecodeError):
+            plans = []
+        plans.append(plan)
+        Path(REMEDIATION_PLANS_FILE).write_text(json.dumps(plans, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Also update the CVE result shown in the dashboard.
+        record["remediation_status"] = plan["status"]
+        record["remediation_action"] = plan["action"]
+        record["remediation_plan_created_at"] = now
+        record["remediation_plan_file"] = REMEDIATION_PLANS_FILE
+        save_cve_results(records)
+
+        message = f"Remediation plan saved to {REMEDIATION_PLANS_FILE}. No software was changed; manual review and patching are still required."
+        remediation_result = {
+            "cve_id": cve_id,
+            "plugin": plan["product"],
+            "action": plan["action"],
+            "status": plan["status"],
+            "target_version": plan["fixed_version"]
+        }
+
+    return render_template_string(
+        ADMIN_HTML,
+        username=username,
+        scan_message="",
+        scan_results=None,
+        cve_records=records,
+        demo_cve_id=DEMO_CVE_ID,
+        demo_plugin=DEMO_PLUGIN,
+        demo_affected_version=DEMO_AFFECTED_VERSION,
+        remediation_message=message,
+        remediation_result=remediation_result
+    )
+
+
+# ---------------- RUN APP ----------------
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
 
                 line = line.strip()
 
@@ -1216,9 +1322,49 @@ def log_watch():
             {% endif %}
 
             <hr>
+<h3>Scenario 3 - Critical CVE Detection</h3>
 
-            <h3>Scenario 3 - Critical CVE Detection</h3>
-            <p><strong>Status:</strong> Pending Log Watch connection</p>
+<p><strong>Status:</strong> Active</p>
+<p><strong>Severity:</strong> Critical</p>
+<p><strong>Data Source:</strong> National Vulnerability Database (NVD)</p>
+<p><strong>Detection:</strong> Critical CVEs detected</p>
+<p><strong>CloudWatch Logging:</strong> Active</p>
+
+<h3>Critical CVE Detection Logs</h3>
+
+{% if scenario3_error %}
+
+    <p>
+        <strong>CloudWatch Error:</strong>
+        {{ scenario3_error }}
+    </p>
+
+{% elif scenario3_events %}
+
+    <table border="1" cellpadding="8">
+
+        <tr>
+            <th>Time</th>
+            <th>Event</th>
+        </tr>
+
+        {% for log in scenario3_events %}
+
+        <tr>
+            <td>{{ log.timestamp }}</td>
+            <td>{{ log.message }}</td>
+        </tr>
+
+        {% endfor %}
+
+    </table>
+
+{% else %}
+
+    <p>No Scenario 3 Critical CVE logs found.</p>
+
+{% endif %}
+     
 
             <hr>
 
@@ -1247,12 +1393,14 @@ def log_watch():
     </html>
     """
 
-    return render_template_string(
+   return render_template_string(
         LOG_WATCH_HTML,
         log_events=log_events,
         log_error=log_error,
         scenario2_events=scenario2_events,
-        scenario2_error=scenario2_error
+        scenario2_error=scenario2_error,
+        scenario3_events=scenario3_events,
+        scenario3_error=scenario3_error
         )
 
 # ---------------- REGISTER ROUTE ----------------
