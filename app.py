@@ -549,26 +549,42 @@ def lookup_nvd_cve(cve_id):
 
 
 def process_gmail_cves():
-    """Deduplicate CVE IDs, enrich records, and persist them for the portal."""
+    """Process only selected Critical CVEs from Gmail for the portal."""
+
+    TARGET_CRITICAL_CVES = {
+        "CVE-2026-14182",
+        "CVE-2026-32558",
+    }
+
     previous = {
         record.get("cve_id"): record
         for record in load_cve_results()
         if record.get("cve_id")
     }
+
     records = []
 
-    for email_record in scan_gmail_cves():
-        cve_id = email_record["cve_id"]
+    # Only keep the two Critical CVEs required for the project demo.
+    gmail_records = [
+        item for item in scan_gmail_cves()
+        if item.get("cve_id", "").upper() in TARGET_CRITICAL_CVES
+    ]
+
+    for email_record in gmail_records:
+        cve_id = email_record["cve_id"].upper()
+
         try:
             record = lookup_nvd_cve(cve_id)
         except Exception as error:
-            record = {
-                "cve_id": cve_id,
-                "severity": "UNKNOWN",
-                "assessment": "NVD lookup failed: " + str(error)
-            }
+            print("NVD lookup failed for", cve_id, ":", error)
+            continue
+
+        # Extra protection: display Critical CVEs only.
+        if record.get("severity", "").upper() != "CRITICAL":
+            continue
 
         record.update(email_record)
+
         advisory = ADVISORY_OVERRIDES.get(cve_id)
 
         if advisory:
@@ -593,10 +609,15 @@ def process_gmail_cves():
         record["remediation_status"] = previous.get(
             cve_id, {}
         ).get("remediation_status", "REVIEW REQUIRED")
+
         record["last_seen_utc"] = datetime.now(
             timezone.utc
         ).isoformat()
+
         records.append(record)
+
+    # Maximum two Critical CVEs on the portal.
+    records = records[:2]
 
     save_cve_results(records)
     return records
