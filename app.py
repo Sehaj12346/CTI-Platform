@@ -9,7 +9,102 @@ import email
 import urllib.request
 import urllib.parse
 from email.header import decode_header
+from dotenv import load_dotenvimport boto3
+import json
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+import imaplib
+import email
+import urllib.request
+import urllib.parse
+from email.header import decode_header
 from dotenv import load_dotenv
+
+load_dotenv()
+
+from flask import Flask, request, render_template_string, render_template,redirect, url_for,session
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+
+app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'local-demo-change-me')
+app.secret_key = os.environ.get("SECRET_KEY")
+
+# AWS clients
+lambda_client = boto3.client("lambda", region_name="us-east-1")
+s3_client = boto3.client("s3", region_name="us-east-1")
+logs_client = boto3.client("logs", region_name="us-east-1")
+
+# AWS S3 configuration
+S3_BUCKET = "cti-threat-data-sk-2026"
+S3_KEY = "threats.json"
+
+FAILED_ATTEMPTS = 0
+USERS_FILE = "users.json"
+VULNERABILITY_LOG_FILE = "vulnerability_monitor.log"
+
+# ---------------- DEMO CVE REMEDIATION ----------------
+# Safe demo: this simulates remediation for one CVE without changing
+# a real WordPress installation.
+DEMO_CVE_ID = "CVE-2026-32558"
+DEMO_PLUGIN = "Affiliate Pro - Affiliate Program for WooCommerce"
+DEMO_AFFECTED_VERSION = "<= 8.9.1"
+DEMO_FIXED_VERSION = "9.0.0 (demo target)"
+
+# ---------------- GMAIL CVE INTAKE + NVD ENRICHMENT ----------------
+CVE_RESULTS_FILE = "cve_results.json"
+REMEDIATION_PLANS_FILE = "remediation_plans.json"
+CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+
+# Project-supplied advisory reference for the demonstrated CVE.
+# This is a local mapping, not a live WPScan API integration.
+ADVISORY_OVERRIDES = {
+    "CVE-2026-14182": {
+        "product": "Customer Email Verification for WooCommerce",
+        "affected_version": "< 3.2.6",
+        "fixed_version": "3.2.6",
+        "advisory_url": (
+            "https://wpscan.com/vulnerability/"
+            "ef4e95a3-6f90-4423-9551-9ac28f7b6291/"
+        ),
+        "advisory_source": "Project-supplied WPScan advisory reference"
+    }
+}
+
+
+def load_cve_results():
+    try:
+        with open(CVE_RESULTS_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+            return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_cve_results(records):
+    with open(CVE_RESULTS_FILE, "w", encoding="utf-8") as file:
+        json.dump(records, file, indent=2, ensure_ascii=False)
+
+
+def decode_mime_header(value):
+    if not value:
+        return ""
+    parts = decode_header(value)
+    return "".join(
+        part.decode(encoding or "utf-8", errors="replace")
+        if isinstance(part, bytes) else part
+        for part, encoding in parts
+    )
+
+
+def scan_gmail_cves():
+    """Read CVE alert emails from Gmail without modifying their read status."""
+    address = os.getenv("GMAIL_ADDRESS")
+    app_password = os.getenv("GMAIL_APP_PASSWORD")
+
+    if not address or not app_password:
 
 load_dotenv()
 
