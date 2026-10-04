@@ -388,13 +388,19 @@ def decode_mime_header(value):
 
 def scan_gmail_cves():
     """Read CVE alert emails from Gmail without modifying their read status."""
+
     address = os.getenv("GMAIL_ADDRESS")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
 
+    print("GMAIL_ADDRESS loaded:", bool(address))
+    print("GMAIL_APP_PASSWORD loaded:", bool(app_password))
+
     if not address or not app_password:
         raise RuntimeError(
-            "Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your local .env file."
+            "Gmail environment variables are missing on the server."
         )
+
+    found = {}
 
     found = {}
 
