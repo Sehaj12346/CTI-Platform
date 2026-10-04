@@ -9,7 +9,7 @@ import email
 import urllib.request
 import urllib.parse
 from email.header import decode_header
-from dotenv import load_dotenvimport boto3
+from dotenv import load_dotenv import boto3
 import json
 import os
 import re
