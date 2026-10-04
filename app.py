@@ -1,5 +1,5 @@
-import boto3
 import json
+import boto3
 import os
 import re
 from datetime import datetime, timezone
@@ -9,17 +9,19 @@ import email
 import urllib.request
 import urllib.parse
 from email.header import decode_header
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
 
 load_dotenv()
 
-from flask import Flask, request, render_template_string, render_template,redirect, url_for,session
+from flask import Flask, request, render_template_string, render_template, redirect, url_for, session
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
-
 app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'local-demo-change-me')
-app.secret_key = os.environ.get("SECRET_KEY")
+app.secret_key = os.environ.get("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY") or "local-development-only-change-me"
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
+)
 
 # AWS clients
 lambda_client = boto3.client("lambda", region_name="us-east-1")
@@ -34,89 +36,301 @@ FAILED_ATTEMPTS = 0
 USERS_FILE = "users.json"
 VULNERABILITY_LOG_FILE = "vulnerability_monitor.log"
 
-# ---------------- DEMO CVE REMEDIATION ----------------
-# Safe demo: this simulates remediation for one CVE without changing
-# a real WordPress installation.
-DEMO_CVE_ID = "CVE-2026-32558"
-DEMO_PLUGIN = "Affiliate Pro - Affiliate Program for WooCommerce"
-DEMO_AFFECTED_VERSION = "<= 8.9.1"
-DEMO_FIXED_VERSION = "9.0.0 (demo target)"
+# ============================================================
+# SCENARIO 5: AWS AUTOMATIC CRITICAL-THREAT PROCESSING
+# Merged from the Scenario 5 Lambda source.
+# The lambda_handler remains deployable as an AWS Lambda entry point.
+# ============================================================
 
-# ---------------- GMAIL CVE INTAKE + NVD ENRICHMENT ----------------
-CVE_RESULTS_FILE = "cve_results.json"
-REMEDIATION_PLANS_FILE = "remediation_plans.json"
-CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+# ============================================================
+# SCENARIO 5: AWS Automatic Critical-Threat Processing
+# API Gateway + Lambda — CTI Data Request & Processing
+#
+# This Lambda function:
+# 1. Receives a CTI data request from the CTI website via API Gateway
+# 2. Fetches real CVE data from NVD API (or uses demo data)
+# 3. Processes and classifies threats by severity
+# 4. Logs every request to CloudWatch automatically
+# 5. Returns structured results back to the website
+# ============================================================
 
-# Project-supplied advisory reference for the demonstrated CVE.
-# This is a local mapping, not a live WPScan API integration.
-ADVISORY_OVERRIDES = {
-    "CVE-2026-14182": {
-        "product": "Customer Email Verification for WooCommerce",
-        "affected_version": "< 3.2.6",
-        "fixed_version": "3.2.6",
-        "advisory_url": (
-            "https://wpscan.com/vulnerability/"
-            "ef4e95a3-6f90-4423-9551-9ac28f7b6291/"
-        ),
-        "advisory_source": "Project-supplied WPScan advisory reference"
-    }
-}
+# CloudWatch logging is automatic — every print() goes to CloudWatch Logs
+# No extra setup needed
 
+def lambda_handler(event, context):
+    print("=" * 60)
+    print("CTI Data Processing Request Received")
+    print(f"Timestamp: {datetime.now(timezone.utc).replace(microsecond=0).isoformat()}")
+    print("=" * 60)
 
-def load_cve_results():
     try:
-        with open(CVE_RESULTS_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-            return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
+        # ── Handle CORS preflight ───────────────────────────
+        method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method")
+        if method == "OPTIONS":
+            return {
+                "statusCode": 204,
+                "headers": {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                    "Access-Control-Allow-Methods": "POST,OPTIONS"
+                },
+                "body": ""
+            }
+
+        # ── Parse request body ──────────────────────────────
+        body = event.get("body", {}) or {}
+        if isinstance(body, str):
+            body = json.loads(body) if body.strip() else {}
+        if not isinstance(body, dict):
+            raise ValueError("Request body must be a JSON object.")
+
+        query_type = str(body.get("query_type", "latest")).lower()
+        severity_filter = str(body.get("severity", "ALL")).upper()
+        if severity_filter not in {"ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"}:
+            raise ValueError("Invalid severity filter.")
+        try:
+            limit = max(1, min(int(body.get("limit", 5)), 50))
+        except (TypeError, ValueError):
+            raise ValueError("limit must be an integer between 1 and 50.")
+
+        print(f"Query Type   : {query_type}")
+        print(f"Severity     : {severity_filter}")
+        print(f"Limit        : {limit}")
+
+        # ── Fetch CTI Data ───────────────────────────────────
+        # Try NVD API first; fall back to demo data for reliable demo
+        cve_data = fetch_cve_data(severity_filter, limit)
+
+        # ── Process & Classify Threats ───────────────────────
+        processed = process_threats(cve_data, severity_filter)
+
+        # ── Summary stats ────────────────────────────────────
+        summary = build_summary(processed)
+
+        print(f"Threats processed  : {len(processed)}")
+        print(f"Critical found     : {summary['critical_count']}")
+        print(f"High found         : {summary['high_count']}")
+        print(f"Processing complete: SUCCESS")
+
+        # ── Return response to website ───────────────────────
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Methods': 'POST,OPTIONS'
+            },
+            'body': json.dumps({
+                'status': 'success',
+                'message': 'CTI data processed successfully by AWS Lambda',
+                'query_type': query_type,
+                'severity_filter': severity_filter,
+                'processed_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat() + 'Z',
+                'processed_by': 'AWS Lambda (CTI-Data-Processor)',
+                'summary': summary,
+                'threats': processed
+            })
+        }
+
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Methods': 'POST,OPTIONS'
+            },
+            'body': json.dumps({
+                'status': 'error',
+                'message': str(e)
+            })
+        }
 
 
-def save_cve_results(records):
-    with open(CVE_RESULTS_FILE, "w", encoding="utf-8") as file:
-        json.dump(records, file, indent=2, ensure_ascii=False)
+def fetch_cve_data(severity_filter, limit):
+    """
+    Fetch CVE data from NVD API.
+    Falls back to demo data if NVD is unavailable (for demo reliability).
+    """
+    print("Fetching CVE data from NVD API...")
+    try:
+        params = {"resultsPerPage": max(1, min(int(limit), 50)), "startIndex": 0}
+        if severity_filter in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+            params["cvssV3Severity"] = severity_filter
+        url = "https://services.nvd.nist.gov/rest/json/cves/2.0?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={'User-Agent': 'CTI-Platform/1.0'})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            data = json.loads(response.read())
+            vulnerabilities = data.get('vulnerabilities', [])
+            print(f"NVD API returned {len(vulnerabilities)} records")
+            return vulnerabilities
+    except Exception as e:
+        print(f"NVD API unavailable ({e}) — using demo data for reliable testing")
+        return get_demo_data()
 
 
-def decode_mime_header(value):
-    if not value:
-        return ""
-    parts = decode_header(value)
-    return "".join(
-        part.decode(encoding or "utf-8", errors="replace")
-        if isinstance(part, bytes) else part
-        for part, encoding in parts
-    )
+def get_demo_data():
+    """
+    Realistic demo CVE data for reliable presentation demos.
+    These mirror real NVD API response structure.
+    """
+    return [
+        {
+            'cve': {
+                'id': 'CVE-2026-1001',
+                'descriptions': [{'lang': 'en', 'value': 'Remote code execution vulnerability in OpenSSL allowing unauthenticated attackers to execute arbitrary code via crafted TLS packets.'}],
+                'published': '2026-09-10T08:00:00.000',
+                'metrics': {'cvssMetricV31': [{'cvssData': {'baseScore': 9.8, 'baseSeverity': 'CRITICAL'}}]}
+            }
+        },
+        {
+            'cve': {
+                'id': 'CVE-2026-1002',
+                'descriptions': [{'lang': 'en', 'value': 'SQL injection vulnerability in popular web framework allows privilege escalation and data exfiltration via crafted HTTP requests.'}],
+                'published': '2026-09-09T12:00:00.000',
+                'metrics': {'cvssMetricV31': [{'cvssData': {'baseScore': 8.6, 'baseSeverity': 'HIGH'}}]}
+            }
+        },
+        {
+            'cve': {
+                'id': 'CVE-2026-1003',
+                'descriptions': [{'lang': 'en', 'value': 'Cross-site scripting (XSS) in authentication module enables session hijacking and credential theft by injecting malicious scripts.'}],
+                'published': '2026-09-08T09:30:00.000',
+                'metrics': {'cvssMetricV31': [{'cvssData': {'baseScore': 7.2, 'baseSeverity': 'HIGH'}}]}
+            }
+        },
+        {
+            'cve': {
+                'id': 'CVE-2026-1004',
+                'descriptions': [{'lang': 'en', 'value': 'Improper input validation in Linux kernel network stack allows local privilege escalation.'}],
+                'published': '2026-09-07T15:00:00.000',
+                'metrics': {'cvssMetricV31': [{'cvssData': {'baseScore': 6.5, 'baseSeverity': 'MEDIUM'}}]}
+            }
+        },
+        {
+            'cve': {
+                'id': 'CVE-2026-1005',
+                'descriptions': [{'lang': 'en', 'value': 'Information disclosure in cloud storage API leaks sensitive metadata to authenticated users with read-only permissions.'}],
+                'published': '2026-09-06T11:00:00.000',
+                'metrics': {'cvssMetricV31': [{'cvssData': {'baseScore': 4.3, 'baseSeverity': 'MEDIUM'}}]}
+            }
+        }
+    ]
 
 
-def scan_gmail_cves():
-    """Read CVE alert emails from Gmail without modifying their read status."""
-    address = os.getenv("GMAIL_ADDRESS")
-    app_password = os.getenv("GMAIL_APP_PASSWORD")
+def process_threats(vulnerabilities, severity_filter):
+    """
+    Process raw CVE data: extract fields, classify, filter by severity.
+    This is the core 'automatic critical-threat processing' that Lambda performs.
+    """
+    processed = []
 
-    if not address or not app_password:
+    for item in vulnerabilities:
+        cve = item.get('cve', {})
 
-load_dotenv()
+        # Extract CVE ID
+        cve_id = cve.get('id', 'UNKNOWN')
 
-from flask import Flask, request, render_template_string, render_template,redirect, url_for,session
-from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
+        # Extract description
+        descriptions = cve.get('descriptions', [])
+        description = next(
+            (d['value'] for d in descriptions if d.get('lang') == 'en'),
+            'No description available'
+        )
 
-app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'local-demo-change-me')
-app.secret_key = os.environ.get("SECRET_KEY")
+        # Extract CVSS score and severity
+        cvss_score = 0.0
+        severity = 'UNKNOWN'
+        metrics = cve.get('metrics', {})
 
-# AWS clients
-lambda_client = boto3.client("lambda", region_name="us-east-1")
-s3_client = boto3.client("s3", region_name="us-east-1")
-logs_client = boto3.client("logs", region_name="us-east-1")
+        if metrics.get('cvssMetricV40'):
+            cvss_data = metrics['cvssMetricV40'][0]['cvssData']
+            cvss_score = cvss_data.get('baseScore', 0.0)
+            severity = cvss_data.get('baseSeverity', 'UNKNOWN')
+        elif metrics.get('cvssMetricV31'):
+            cvss_data = metrics['cvssMetricV31'][0]['cvssData']
+            cvss_score = cvss_data.get('baseScore', 0.0)
+            severity = cvss_data.get('baseSeverity', 'UNKNOWN')
+        elif metrics.get('cvssMetricV30'):
+            cvss_data = metrics['cvssMetricV30'][0]['cvssData']
+            cvss_score = cvss_data.get('baseScore', 0.0)
+            severity = cvss_data.get('baseSeverity', 'UNKNOWN')
+        elif metrics.get('cvssMetricV2'):
+            cvss_data = metrics['cvssMetricV2'][0]['cvssData']
+            cvss_score = cvss_data.get('baseScore', 0.0)
+            # Convert V2 score to severity label
+            severity = classify_severity(cvss_score)
 
-# AWS S3 configuration
-S3_BUCKET = "cti-threat-data-sk-2026"
-S3_KEY = "threats.json"
+        severity = severity.upper()
 
-FAILED_ATTEMPTS = 0
-USERS_FILE = "users.json"
-VULNERABILITY_LOG_FILE = "vulnerability_monitor.log"
+        # Log each threat
+        print(f"  CVE: {cve_id} | Severity: {severity} | CVSS: {cvss_score}")
+
+        # Apply severity filter
+        if severity_filter != 'ALL' and severity != severity_filter.upper():
+            continue
+
+        processed.append({
+            'cve_id': cve_id,
+            'severity': severity,
+            'cvss_score': cvss_score,
+            'description': description[:200] + '...' if len(description) > 200 else description,
+            'published': cve.get('published', 'N/A')[:10],
+            'risk_level': get_risk_level(severity),
+            'action_required': get_action(severity)
+        })
+
+    return processed
+
+
+def classify_severity(score):
+    """Convert CVSS score to severity label."""
+    if score >= 9.0:
+        return 'CRITICAL'
+    elif score >= 7.0:
+        return 'HIGH'
+    elif score >= 4.0:
+        return 'MEDIUM'
+    elif score > 0:
+        return 'LOW'
+    return 'UNKNOWN'
+
+
+def get_risk_level(severity):
+    return {
+        'CRITICAL': 'IMMEDIATE ACTION REQUIRED',
+        'HIGH': 'Action Required Within 24 Hours',
+        'MEDIUM': 'Review Within 7 Days',
+        'LOW': 'Monitor and Patch at Next Cycle'
+    }.get(severity, 'Assess Manually')
+
+
+def get_action(severity):
+    return {
+        'CRITICAL': 'Isolate affected systems immediately and apply emergency patch',
+        'HIGH': 'Prioritise patching and review affected assets',
+        'MEDIUM': 'Schedule patch in next maintenance window',
+        'LOW': 'Log and include in next patch cycle'
+    }.get(severity, 'Manual review required')
+
+
+def build_summary(threats):
+    """Build a stats summary for the dashboard."""
+    counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'UNKNOWN': 0}
+    for t in threats:
+        sev = t.get('severity', 'UNKNOWN')
+        counts[sev] = counts.get(sev, 0) + 1
+
+    return {
+        'total_threats': len(threats),
+        'critical_count': counts['CRITICAL'],
+        'high_count': counts['HIGH'],
+        'medium_count': counts['MEDIUM'],
+        'low_count': counts['LOW'],
+        'highest_cvss': max((t['cvss_score'] for t in threats), default=0),
+        'requires_immediate_action': counts['CRITICAL'] > 0
+    }
 
 # ---------------- DEMO CVE REMEDIATION ----------------
 # Safe demo: this simulates remediation for one CVE without changing
@@ -391,9 +605,12 @@ ADMIN_REFERENCE = os.environ.get("ADMIN_REFERENCE")
 def load_users():
     if not os.path.exists(USERS_FILE):
         return {}
-
-    with open(USERS_FILE, "r") as file:
-        return json.load(file)
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def save_users(users):
@@ -1087,16 +1304,13 @@ def run_vulnerability_scan():
 # ---------------- SECURITY LOG WATCH ----------------
 @app.route("/log-watch")
 def log_watch():
-
-        if session.get("role") != "admin":
+    if session.get("role") != "admin":
         return redirect(url_for("home"))
 
     log_events = []
     log_error = None
-
     scenario2_events = []
     scenario2_error = None
-
     scenario3_events = []
     scenario3_error = None
 
@@ -1107,379 +1321,93 @@ def log_watch():
             descending=True,
             limit=1
         )
-
         streams = streams_response.get("logStreams", [])
-
         if streams:
             latest_stream = streams[0]["logStreamName"]
-
             response = logs_client.get_log_events(
                 logGroupName="/aws/lambda/CTI-Failed-Login-Alert",
                 logStreamName=latest_stream,
                 startFromHead=True
             )
-
-            events = response.get("events", [])
-
-            for event in events:
+            for event in response.get("events", []):
                 timestamp_ms = event.get("timestamp", 0)
-
-                readable_time = datetime.fromtimestamp(
-                    timestamp_ms / 1000
-                ).strftime("%Y-%m-%d %H:%M:%S")
-
+                readable_time = datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
                 message = event.get("message", "").strip()
-
-                if (
-                    "CTI SECURITY LOG" in message
-                    or "Timestamp:" in message
-                    or "Scenario:" in message
-                    or "Username:" in message
-                    or "Failed Attempts:" in message
-                    or "Severity:" in message
-                    or "Event:" in message
-                    or "Action:" in message
-                    or "SNS Status:" in message
-                    or "Log Status:" in message
-                ):
-                    log_events.append({
-                        "timestamp": readable_time,
-                        "message": message
-                    })
-
+                if any(marker in message for marker in (
+                    "CTI SECURITY LOG", "Timestamp:", "Scenario:", "Username:",
+                    "Failed Attempts:", "Severity:", "Event:", "Action:",
+                    "SNS Status:", "Log Status:"
+                )):
+                    log_events.append({"timestamp": readable_time, "message": message})
     except Exception as error:
         log_error = str(error)
         print("CloudWatch Log Watch error:", error)
 
-
-
-
-    # ---------------- SCENARIO 2: VULNERABILITY MONITOR LOGS ----------------
-
     try:
-
         if os.path.exists(VULNERABILITY_LOG_FILE):
-
-            with open(
-                VULNERABILITY_LOG_FILE,
-                "r",
-                encoding="utf-8"
-            ) as file:
-
+            with open(VULNERABILITY_LOG_FILE, "r", encoding="utf-8") as file:
                 lines = file.readlines()
-
-            # Show the latest 20 log records
             for line in reversed(lines[-20:]):
-        return render_template_string(
-            ADMIN_HTML,
-            username=username,
-            scan_message=(
-                f"Scan completed. {len(cve_records)} unique CVEs "
-                "processed from Gmail alert emails."
-            ),
-            scan_results=scan_results,
-            cve_records=cve_records,
-            demo_cve_id=DEMO_CVE_ID,
-            demo_plugin=DEMO_PLUGIN,
-            demo_affected_version=DEMO_AFFECTED_VERSION,
-            remediation_message="",
-            remediation_result=None
-        )
-
-    except Exception as error:
-        print("CVE scan error:", error)
-        return render_template_string(
-            ADMIN_HTML,
-            username=username,
-            scan_message="CVE Scan Error: " + str(error),
-            scan_results=None,
-            cve_records=load_cve_results(),
-            demo_cve_id=DEMO_CVE_ID,
-            demo_plugin=DEMO_PLUGIN,
-            demo_affected_version=DEMO_AFFECTED_VERSION,
-            remediation_message="",
-            remediation_result=None
-        )
-
-
-# ---------------- DEMO: AUTOMATIC CVE REMEDIATION ----------------
-
-@app.route("/remediate-cve", methods=["POST"])
-def remediate_cve():
-    """Persist a remediation plan; this route does not patch software."""
-    username = request.form.get("username", "Administrator")
-    cve_id = request.form.get("cve_id", DEMO_CVE_ID).strip().upper()
-    records = load_cve_results()
-    record = next((item for item in records if item.get("cve_id", "").upper() == cve_id), None)
-
-    if record is None:
-        message = "CVE not found in saved Gmail scan results. Run the Critical CVE Scan first."
-        remediation_result = None
-    else:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        plan = {
-            "plan_id": f"{cve_id}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
-            "cve_id": cve_id,
-            "product": record.get("product") or "Unknown — verify affected asset",
-            "affected_version": record.get("affected_version") or "Unknown — verify installed version",
-            "fixed_version": record.get("fixed_version") or "Not confirmed — review vendor advisory",
-            "action": record.get("recommended_action") or "Review vendor advisory and verify applicability before patching.",
-            "status": "PLAN RECORDED — MANUAL REVIEW / PATCH REQUIRED",
-            "created_at": now,
-            "created_by": username,
-            "execution": "PLAN ONLY — no software was changed"
-        }
-
-        # Keep a durable, separate history of remediation plans.
-        try:
-            plans = json.loads(Path(REMEDIATION_PLANS_FILE).read_text(encoding="utf-8")) if Path(REMEDIATION_PLANS_FILE).exists() else []
-            if not isinstance(plans, list):
-                plans = []
-        except (OSError, json.JSONDecodeError):
-            plans = []
-        plans.append(plan)
-        Path(REMEDIATION_PLANS_FILE).write_text(json.dumps(plans, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        # Also update the CVE result shown in the dashboard.
-        record["remediation_status"] = plan["status"]
-        record["remediation_action"] = plan["action"]
-        record["remediation_plan_created_at"] = now
-        record["remediation_plan_file"] = REMEDIATION_PLANS_FILE
-        save_cve_results(records)
-
-        message = f"Remediation plan saved to {REMEDIATION_PLANS_FILE}. No software was changed; manual review and patching are still required."
-        remediation_result = {
-            "cve_id": cve_id,
-            "plugin": plan["product"],
-            "action": plan["action"],
-            "status": plan["status"],
-            "target_version": plan["fixed_version"]
-        }
-
-    return render_template_string(
-        ADMIN_HTML,
-        username=username,
-        scan_message="",
-        scan_results=None,
-        cve_records=records,
-        demo_cve_id=DEMO_CVE_ID,
-        demo_plugin=DEMO_PLUGIN,
-        demo_affected_version=DEMO_AFFECTED_VERSION,
-        remediation_message=message,
-        remediation_result=remediation_result
-    )
-
-
-# ---------------- RUN APP ----------------
-
-if __name__ == "__main__":
-    app.run(debug=True)
-
-
                 line = line.strip()
-
                 if " | " in line:
-
-                    timestamp, message = line.split(
-                        " | ",
-                        1
-                    )
-
-                    scenario2_events.append({
-                        "timestamp": timestamp,
-                        "message": message
-                    })
-
+                    timestamp, message = line.split(" | ", 1)
+                    scenario2_events.append({"timestamp": timestamp, "message": message})
     except Exception as error:
-
         scenario2_error = str(error)
-
-        print(
-            "Scenario 2 Log File Error:",
-            error
-        )
+        print("Scenario 2 Log File Error:", error)
 
     LOG_WATCH_HTML = """
-
-    <!DOCTYPE html>
-    <html>
-
-        <head>
-            <title>CTI Security Log Watch</title>
-        </head>
-
-        <body>
-
-            <h1>CTI Security Log Watch</h1>
-
-            <h2>Central Security Monitoring</h2>
-
-            <p>
-                This dashboard monitors security events generated
-                by the CTI platform scenarios.
-            </p>
-
-            <hr>
-
-            <h3>Scenario 1 - Failed Login Detection</h3>
-
-            <p><strong>Status:</strong> Active</p>
-            <p><strong>Severity:</strong> High</p>
-            <p><strong>Detection:</strong> Multiple failed login attempts</p>
-            <p><strong>Action:</strong> SNS security alert triggered</p>
-            <p><strong>CloudWatch Logging:</strong> Active</p>
-
-            <h3>Live CloudWatch Security Logs</h3>
-
-            {% if log_error %}
-
-                <p>
-                    <strong>CloudWatch Error:</strong>
-                    {{ log_error }}
-                </p>
-
-            {% elif log_events %}
-
-                <table border="1" cellpadding="8">
-
-                    <tr>
-                        <th>Time</th>
-                        <th>Security Event</th>
-                    </tr>
-
-                    {% for log in log_events %}
-
-                        <tr>
-                            <td>{{ log.timestamp }}</td>
-                            <td>{{ log.message }}</td>
-                        </tr>
-
-                    {% endfor %}
-
-                </table>
-
-            {% else %}
-
-                <p>No Scenario 1 security logs found.</p>
-
-            {% endif %}
-
-            <hr>
-            <h3>Scenario 2 - Automated Vulnerability Monitoring</h3>
-
-            <p><strong>Status:</strong> Active</p>
-            <p><strong>Data Source:</strong> National Vulnerability Database (NVD)</p>
-            <p><strong>Monitoring:</strong> Newly published vulnerabilities</p>
-            <p><strong>CloudWatch Logging:</strong> Active</p>
-
-            <h3>Vulnerability Monitor Logs</h3>
-
-            {% if scenario2_error %}
-
-                <p>
-                <strong>CloudWatch Error:</strong>
-                {{ scenario2_error }}
-                </p>
-
-            {% elif scenario2_events %}
-
-                <table border="1" cellpadding="8">
-
-                    <tr>
-                        <th>Time</th>
-                        <th>Event</th>
-                    </tr>
-
-                    {% for log in scenario2_events %}
-
-                        <tr>
-                            <td>{{ log.timestamp }}</td>
-                            <td>{{ log.message }}</td>
-                        </tr>
-
-                    {% endfor %}
-
-                </table>
-
-            {% else %}
-
-            <p>No Scenario 2 logs found.</p>
-
-            {% endif %}
-
-            <hr>
+<!DOCTYPE html>
+<html>
+<head><title>CTI Security Log Watch</title></head>
+<body>
+<h1>CTI Security Log Watch</h1>
+<h2>Central Security Monitoring</h2>
+<p>This dashboard monitors security events generated by the CTI platform scenarios.</p>
+<hr>
+<h3>Scenario 1 - Failed Login Detection</h3>
+<p><strong>Status:</strong> Active</p>
+<p><strong>Severity:</strong> High</p>
+<p><strong>Detection:</strong> Multiple failed login attempts</p>
+<p><strong>Action:</strong> SNS security alert triggered</p>
+<p><strong>CloudWatch Logging:</strong> Active</p>
+<h3>Live CloudWatch Security Logs</h3>
+{% if log_error %}<p><strong>CloudWatch Error:</strong> {{ log_error }}</p>
+{% elif log_events %}<table border="1" cellpadding="8"><tr><th>Time</th><th>Security Event</th></tr>{% for log in log_events %}<tr><td>{{ log.timestamp }}</td><td>{{ log.message }}</td></tr>{% endfor %}</table>
+{% else %}<p>No Scenario 1 security logs found.</p>{% endif %}
+<hr>
+<h3>Scenario 2 - Automated Vulnerability Monitoring</h3>
+<p><strong>Status:</strong> Active</p>
+<p><strong>Data Source:</strong> National Vulnerability Database (NVD)</p>
+<p><strong>Monitoring:</strong> Newly published vulnerabilities</p>
+<p><strong>CloudWatch Logging:</strong> Active</p>
+<h3>Vulnerability Monitor Logs</h3>
+{% if scenario2_error %}<p><strong>Log Error:</strong> {{ scenario2_error }}</p>
+{% elif scenario2_events %}<table border="1" cellpadding="8"><tr><th>Time</th><th>Event</th></tr>{% for log in scenario2_events %}<tr><td>{{ log.timestamp }}</td><td>{{ log.message }}</td></tr>{% endfor %}</table>
+{% else %}<p>No Scenario 2 logs found.</p>{% endif %}
+<hr>
 <h3>Scenario 3 - Critical CVE Detection</h3>
-
 <p><strong>Status:</strong> Active</p>
 <p><strong>Severity:</strong> Critical</p>
 <p><strong>Data Source:</strong> National Vulnerability Database (NVD)</p>
 <p><strong>Detection:</strong> Critical CVEs detected</p>
 <p><strong>CloudWatch Logging:</strong> Active</p>
-
 <h3>Critical CVE Detection Logs</h3>
+{% if scenario3_error %}<p><strong>Log Error:</strong> {{ scenario3_error }}</p>
+{% elif scenario3_events %}<table border="1" cellpadding="8"><tr><th>Time</th><th>Event</th></tr>{% for log in scenario3_events %}<tr><td>{{ log.timestamp }}</td><td>{{ log.message }}</td></tr>{% endfor %}</table>
+{% else %}<p>No Scenario 3 Critical CVE logs found.</p>{% endif %}
+<hr>
+<h3>Scenario 4</h3><p><strong>Status:</strong> Pending Log Watch connection</p>
+<hr>
+<h3>Scenario 5 - CTI Threat Processing</h3><p><strong>Status:</strong> AWS Lambda CTI processor included in this application.</p>
+<hr>
+<p><strong>Overall Monitoring Status:</strong> Active</p>
+<br><a href="/admin">Back to Administrator Portal</a>
+</body>
+</html>
+"""
 
-{% if scenario3_error %}
-
-    <p>
-        <strong>CloudWatch Error:</strong>
-        {{ scenario3_error }}
-    </p>
-
-{% elif scenario3_events %}
-
-    <table border="1" cellpadding="8">
-
-        <tr>
-            <th>Time</th>
-            <th>Event</th>
-        </tr>
-
-        {% for log in scenario3_events %}
-
-        <tr>
-            <td>{{ log.timestamp }}</td>
-            <td>{{ log.message }}</td>
-        </tr>
-
-        {% endfor %}
-
-    </table>
-
-{% else %}
-
-    <p>No Scenario 3 Critical CVE logs found.</p>
-
-{% endif %}
-     
-
-            <hr>
-
-            <h3>Scenario 4</h3>
-            <p><strong>Status:</strong> Pending Log Watch connection</p>
-
-            <hr>
-
-            <h3>Scenario 5 - CTI Threat Processing</h3>
-            <p><strong>Status:</strong> Pending Log Watch connection</p>
-
-            <hr>
-
-            <p>
-                <strong>Overall Monitoring Status:</strong>
-                Active
-            </p>
-
-            <br>
-
-            <a href="/admin">
-                Back to Administrator Portal
-            </a>
-
-        </body>
-    </html>
-    """
-
-   return render_template_string(
+    return render_template_string(
         LOG_WATCH_HTML,
         log_events=log_events,
         log_error=log_error,
@@ -1487,8 +1415,7 @@ if __name__ == "__main__":
         scenario2_error=scenario2_error,
         scenario3_events=scenario3_events,
         scenario3_error=scenario3_error
-        )
-
+    )
 # ---------------- REGISTER ROUTE ----------------
 
 @app.route("/register", methods=["GET", "POST"])
@@ -1500,16 +1427,23 @@ def register():
             message=""
         )
 
-    username = request.form["username"]
-    password = request.form["password"]
-    role = request.form["role"]
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    role = request.form.get("role", "client").strip().lower()
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,50}", username):
+        return render_template_string(REGISTER_HTML, message="Username must be 3-50 characters and use letters, numbers, dots, underscores or hyphens.")
+    if len(password) < 8:
+        return render_template_string(REGISTER_HTML, message="Password must be at least 8 characters.")
+    if role not in {"client", "admin"}:
+        return render_template_string(REGISTER_HTML, message="Invalid account type.")
 
     if role == "admin":
          admin_reference = request.form.get("admin_reference", "")
 
 
 
-         if admin_reference != ADMIN_REFERENCE:
+         if not ADMIN_REFERENCE or admin_reference != ADMIN_REFERENCE:
              return render_template_string(
                  REGISTER_HTML,
                  message="Invalid Admin Reference."
@@ -1539,89 +1473,49 @@ def register():
 
 @app.route("/login", methods=["POST"])
 def login():
-
-    global FAILED_ATTEMPTS
-
-    username = request.form["username"]
-    password = request.form["password"]
-
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
     users = load_users()
 
-    if username in users:
+    user = users.get(username)
+    if user and check_password_hash(user.get("password", ""), password):
+        session.clear()
+        session["username"] = username
+        session["role"] = user.get("role", "client")
+        session["failed_attempts"] = 0
+        return redirect(url_for("admin_portal" if session["role"] == "admin" else "client_portal"))
 
-        stored_password = users[username]["password"]
-
-        if check_password_hash(stored_password, password):
-
-            FAILED_ATTEMPTS = 0
-
-            role = users[username].get("role", "client")
-            session["username"] = username
-            session["role"] = role
-
-            # PB-14 Administrator
-            if role == "admin":
-                return redirect(url_for("admin_portal"))
-
-            # PB-15 Client
-            else:
-                 return redirect(url_for("client_portal"))
-
-
-    # ---------------- FAILED LOGIN ----------------
-
-    FAILED_ATTEMPTS += 1
-
-    if FAILED_ATTEMPTS >= 3:
-
-        payload = {
-            "username": username,
-            "failed_attempts": FAILED_ATTEMPTS,
-            "severity": "High"
-        }
-
+    attempts = int(session.get("failed_attempts", 0)) + 1
+    session["failed_attempts"] = attempts
+    if attempts >= 3:
+        payload = {"username": username or "unknown", "failed_attempts": attempts, "severity": "High"}
         try:
-
-            lambda_client.invoke(
-                FunctionName="CTI-Failed-Login-Alert",
-                InvocationType="Event",
-                Payload=json.dumps(payload).encode("utf-8")
-            )
-
-            print("AWS Lambda security alert invoked successfully.")
-
+            lambda_client.invoke(FunctionName="CTI-Failed-Login-Alert", InvocationType="Event", Payload=json.dumps(payload).encode("utf-8"))
         except Exception as error:
-
             print("AWS Lambda error:", error)
+        session["failed_attempts"] = 0
+        return render_template_string(LOGIN_HTML, message="Security Alert: Multiple failed login attempts detected!")
 
-        FAILED_ATTEMPTS = 0
-
-        return render_template_string(
-            LOGIN_HTML,
-            message=(
-                "Security Alert: Multiple failed login "
-                "attempts detected!"
-            )
-        )
-
-    return render_template_string(
-        LOGIN_HTML,
-        message=f"Invalid login. Failed attempt {FAILED_ATTEMPTS}/3"
-    )
+    return render_template_string(LOGIN_HTML, message=f"Invalid login. Failed attempt {attempts}/3")
 
 
 # ---------------- SUPPORT REQUEST ----------------
 
 @app.route("/support")
 def support():
-    return render_template("support.html")
+    try:
+        return render_template("support.html")
+    except Exception:
+        return "<h1>Support</h1><p>Support page template is not installed.</p>"
 
 
 # ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
 
 @app.route("/scan-cves", methods=["POST"])
 def scan_cves():
-    username = request.form.get("username", "Administrator")
+    if session.get("role") != "admin":
+        return redirect(url_for("home"))
+    username = session.get("username", "Administrator")
 
     try:
         # Keep the existing Lambda scan, SNS notification and DynamoDB deduplication.
@@ -1689,7 +1583,9 @@ def scan_cves():
 @app.route("/remediate-cve", methods=["POST"])
 def remediate_cve():
     """Persist a remediation plan; this route does not patch software."""
-    username = request.form.get("username", "Administrator")
+    if session.get("role") != "admin":
+        return redirect(url_for("home"))
+    username = session.get("username", "Administrator")
     cve_id = request.form.get("cve_id", DEMO_CVE_ID).strip().upper()
     records = load_cve_results()
     record = next((item for item in records if item.get("cve_id", "").upper() == cve_id), None)
@@ -1755,5 +1651,4 @@ def remediate_cve():
 # ---------------- RUN APP ----------------
 
 if __name__ == "__main__":
-    app.run(debug=True)
-
+    app.run(host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "5000")), debug=False)
