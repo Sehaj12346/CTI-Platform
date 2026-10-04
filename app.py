@@ -9,18 +9,7 @@ import email
 import urllib.request
 import urllib.parse
 from email.header import decode_header
-from dotenv import load_dotenv import boto3
-import json
-import os
-import re
-from datetime import datetime, timezone
-from pathlib import Path
-import imaplib
-import email
-import urllib.request
-import urllib.parse
-from email.header import decode_header
-from dotenv import load_dotenv
+from dotenv import load_dotenv 
 
 load_dotenv()
 
