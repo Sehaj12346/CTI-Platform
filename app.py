@@ -348,6 +348,12 @@ CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
 # Project-supplied advisory reference for the demonstrated CVE.
 # This is a local mapping, not a live WPScan API integration.
 ADVISORY_OVERRIDES = {
+    "CVE-2026-32558": {
+        "product": "Affiliate Pro - Affiliate Program for WooCommerce & WordPress",
+        "affected_version": "<= 8.9.1",
+        "fixed_version": "Not confirmed — verify vendor-supported patched release",
+        "advisory_source": "Project-supplied vulnerability description"
+    },
     "CVE-2026-14182": {
         "product": "Customer Email Verification for WooCommerce",
         "affected_version": "< 3.2.6",
@@ -593,10 +599,20 @@ def process_gmail_cves():
                 "Project-supplied advisory matched. Confirm the installed "
                 "plugin and version before applying the update."
             )
-            record["recommended_action"] = (
-                "Back up and test compatibility, then update to "
-                + advisory["fixed_version"] + " or later."
-            )
+            if cve_id == "CVE-2026-32558":
+                record["assessment"] = (
+                    "Affected versions identified from project advisory; verify the installed "
+                    "plugin and vendor-confirmed fixed release before patching."
+                )
+                record["recommended_action"] = (
+                    "Back up the site, verify the installed plugin version, and apply "
+                    "a vendor-confirmed security fix after compatibility testing."
+                )
+            else:
+                record["recommended_action"] = (
+                    "Back up and test compatibility, then update to "
+                    + advisory["fixed_version"] + " or later."
+                )
         else:
             record.setdefault("product", "Not identified")
             record.setdefault("affected_version", "Not confirmed")
@@ -911,6 +927,19 @@ ADMIN_HTML = """
         <p><strong>Recommendation:</strong> {{ cve.recommended_action or 'Review vendor advisory.' }}</p>
         <p><strong>Assessment:</strong> {{ cve.assessment }}</p>
         <p><strong>Remediation status:</strong> {{ cve.remediation_status }}</p>
+        {% if remediation_result and remediation_result.cve_id == cve.cve_id %}
+        <div style="border:2px solid #287a45;background:#f2faf4;padding:14px;margin:12px 0;">
+            <h4>Remediation Plan Recorded Successfully</h4>
+            <p><strong>CVE:</strong> {{ remediation_result.cve_id }}</p>
+            <p><strong>Product:</strong> {{ remediation_result.plugin }}</p>
+            <p><strong>Affected version:</strong> {{ remediation_result.affected_version }}</p>
+            <p><strong>Fixed version:</strong> {{ remediation_result.target_version }}</p>
+            <p><strong>Recommended action:</strong> {{ remediation_result.action }}</p>
+            <p><strong>Status:</strong> {{ remediation_result.status }}</p>
+            <p><strong>Recorded at (UTC):</strong> {{ remediation_result.created_at }}</p>
+            <p><strong>Execution:</strong> No software was changed. Manual verification and patching are required.</p>
+        </div>
+        {% endif %}
         <form method="POST" action="/remediate-cve">
             <input type="hidden" name="username" value="{{ username }}">
             <input type="hidden" name="cve_id" value="{{ cve.cve_id }}">
@@ -920,7 +949,7 @@ ADMIN_HTML = """
     {% endfor %}
     {% endif %}
 
-    {% if remediation_message %}
+    {% if remediation_message and not remediation_result %}
         <p><strong>{{ remediation_message }}</strong></p>
     {% endif %}
 
@@ -1635,6 +1664,14 @@ def remediate_cve():
     username = session.get("username", "Administrator")
     cve_id = request.form.get("cve_id", "").strip().upper()
     records = load_cve_results()
+    for item in records:
+        if item.get("cve_id", "").upper() == "CVE-2026-32558":
+            item.update({key: value for key, value in ADVISORY_OVERRIDES["CVE-2026-32558"].items()
+                         if key in {"product", "affected_version", "fixed_version"}})
+            item["recommended_action"] = (
+                "Back up the site, verify the installed plugin version, and apply "
+                "a vendor-confirmed security fix after compatibility testing."
+            )
     record = next((item for item in records if item.get("cve_id", "").upper() == cve_id), None)
 
     if record is None:
@@ -1676,6 +1713,8 @@ def remediate_cve():
         remediation_result = {
             "cve_id": cve_id,
             "plugin": plan["product"],
+            "affected_version": plan["affected_version"],
+            "created_at": now,
             "action": plan["action"],
             "status": plan["status"],
             "target_version": plan["fixed_version"]
