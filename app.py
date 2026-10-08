@@ -911,16 +911,6 @@ ADMIN_HTML = """
         <p><strong>Recommendation:</strong> {{ cve.recommended_action or 'Review vendor advisory.' }}</p>
         <p><strong>Assessment:</strong> {{ cve.assessment }}</p>
         <p><strong>Remediation status:</strong> {{ cve.remediation_status }}</p>
-        {% if cve.advisory_url %}
-        <p><a href="{{ cve.advisory_url }}" target="_blank" rel="noopener">View vendor advisory</a></p>
-        {% endif %}
-        {% if cve.references %}
-        <p><strong>NVD references:</strong>
-        {% for ref in cve.references[:3] %}
-            <a href="{{ ref }}" target="_blank" rel="noopener">Reference {{ loop.index }}</a>{% if not loop.last %} | {% endif %}
-        {% endfor %}
-        </p>
-        {% endif %}
         <form method="POST" action="/remediate-cve">
             <input type="hidden" name="username" value="{{ username }}">
             <input type="hidden" name="cve_id" value="{{ cve.cve_id }}">
@@ -930,43 +920,9 @@ ADMIN_HTML = """
     {% endfor %}
     {% endif %}
 
-    <h3>Automatic CVE Remediation (Demo)</h3>
-
-    <p>
-        This demo handles one critical CVE:
-        <strong>{{ demo_cve_id }}</strong>
-    </p>
-
-    <p>
-        <strong>Plugin:</strong> {{ demo_plugin }}
-    </p>
-
-    <p>
-        <strong>Affected version:</strong> {{ demo_affected_version }}
-    </p>
-
-    <form method="POST" action="/remediate-cve">
-        <input type="hidden" name="username" value="{{ username }}">
-        <button type="submit">Run Automatic Remediation</button>
-    </form>
-
     {% if remediation_message %}
         <p><strong>{{ remediation_message }}</strong></p>
     {% endif %}
-
-    {% if remediation_result %}
-        <hr>
-        <h4>Remediation Result</h4>
-        <p><strong>CVE:</strong> {{ remediation_result.cve_id }}</p>
-        <p><strong>Plugin:</strong> {{ remediation_result.plugin }}</p>
-        <p><strong>Action:</strong> {{ remediation_result.action }}</p>
-        <p><strong>Status:</strong> {{ remediation_result.status }}</p>
-        <p><strong>Target version:</strong> {{ remediation_result.target_version }}</p>
-    {% endif %}
-
-<br><br>
-
-<hr>
 
 <h3>Automated Vulnerability Monitoring</h3>
 
@@ -1669,7 +1625,7 @@ def scan_cves():
         )
 
 
-# ---------------- DEMO: AUTOMATIC CVE REMEDIATION ----------------
+# ---------------- MANUAL CVE REMEDIATION PLANNING ----------------
 
 @app.route("/remediate-cve", methods=["POST"])
 def remediate_cve():
@@ -1677,7 +1633,7 @@ def remediate_cve():
     if session.get("role") != "admin":
         return redirect(url_for("home"))
     username = session.get("username", "Administrator")
-    cve_id = request.form.get("cve_id", DEMO_CVE_ID).strip().upper()
+    cve_id = request.form.get("cve_id", "").strip().upper()
     records = load_cve_results()
     record = next((item for item in records if item.get("cve_id", "").upper() == cve_id), None)
 
