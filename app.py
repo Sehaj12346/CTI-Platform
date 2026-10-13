@@ -1,4 +1,6 @@
 import json
+import hashlib
+import logging
 import boto3
 import os
 import re
@@ -13,8 +15,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from flask import Flask, request, render_template_string, render_template, redirect, url_for, session
+from flask import Flask, request, render_template_string, render_template, redirect, url_for, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY") or "local-development-only-change-me"
 app.config.update(
@@ -22,6 +25,16 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
 )
+
+# Scenario 4 upload controls. Keep the limit aligned with the report.
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+logging.basicConfig(
+    filename=os.getenv("SECURITY_LOG_FILE", "security.log"),
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+security_logger = logging.getLogger("cti_security")
+
 
 # AWS clients
 lambda_client = boto3.client("lambda", region_name="us-east-1")
@@ -982,6 +995,10 @@ ADMIN_HTML = """
 
 <a href="/">Logout</a>
 
+<hr>
+    <h3>Scenario 4 – Suspicious File Analysis</h3>
+    <p><a href="/scenario4">Open Malware Analysis</a></p>
+    <p><a href="/log-watch">Security Log Watch</a> | <a href="/support">Support</a></p>
 </body>
 </html>
 """
@@ -1146,6 +1163,12 @@ CLIENT_HTML = """
     </form>
 
     <br><br>
+
+    <hr>
+    <h3>Suspicious File Analysis (Scenario 4)</h3>
+    <p>Upload a file for SHA-256 hashing, VirusTotal hash-reputation lookup and private S3 quarantine.</p>
+    <p><a href="/scenario4">Open Malware Analysis</a> | <a href="/incident-reporter">Report a Security Incident</a></p>
+    <p><a href="/threat-search">Threat Search</a> | <a href="/support">Support</a></p>
 
     <a href="/">Logout</a>
 
@@ -1577,12 +1600,256 @@ def login():
 
 # ---------------- SUPPORT REQUEST ----------------
 
+
+# ---------------- THREAT SEARCH PAGE ----------------
+@app.route("/threat-search")
+def threat_search_page():
+    if session.get("role") not in {"admin", "client"}:
+        return redirect(url_for("home"))
+    return render_template("threat-search.html")
+
+
 @app.route("/support")
 def support():
     try:
         return render_template("support.html")
     except Exception:
         return "<h1>Support</h1><p>Support page template is not installed.</p>"
+
+
+
+
+
+# ---------------- CYBERSECURITY INCIDENT REPORTER (PB-22) ----------------
+INCIDENT_REPORTER_HTML = """
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Incident Reporter | CTI Platform</title>
+<style>
+body{margin:0;background:#0b1120;color:#e5edf8;font:16px/1.5 system-ui,Segoe UI,sans-serif}
+header{padding:18px 5%;background:#101a2b;border-bottom:1px solid #26354d}
+header a{color:#93c5fd;margin-right:14px;text-decoration:none}
+main{max-width:850px;margin:30px auto;padding:0 18px}.panel{background:#121c2f;border:1px solid #26354d;border-radius:14px;padding:24px}
+label{display:block;margin-top:12px;font-weight:650}input,select,textarea{width:100%;padding:10px;margin-top:5px;background:#0b1120;color:#e5edf8;border:1px solid #43536b;border-radius:7px}
+button{margin-top:16px;background:#2563eb;color:#fff;border:0;border-radius:8px;padding:11px 16px;font-weight:650}
+.note{color:#aab8cc}
+</style></head><body>
+<header><strong>CTI PLATFORM · INCIDENT REPORTER</strong><p><a href="/client">Client Portal</a><a href="/scenario4">Scenario 4</a><a href="/threat-search">Threat Search</a><a href="/">Logout</a></p></header>
+<main><h1>Cybersecurity Incident Reporter</h1><p class="note">Submit a security incident for review. Do not include passwords, API keys or other secrets.</p>
+<div class="panel">
+<form method="post">
+<label for="category">Incident category</label><select id="category" name="category" required>
+<option value="Suspicious file">Suspicious file</option><option value="Phishing">Phishing</option><option value="Unauthorised access">Unauthorised access</option><option value="Vulnerability">Vulnerability</option><option value="Other">Other</option></select>
+<label for="severity">Severity</label><select id="severity" name="severity" required><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select>
+<label for="summary">Short summary</label><input id="summary" name="summary" maxlength="160" required>
+<label for="description">Description</label><textarea id="description" name="description" rows="5" maxlength="4000" required></textarea>
+<button type="submit">Submit Incident Report</button>
+</form>
+{% if message %}<p role="status">{{ message }}</p>{% endif %}
+</div></main></body></html>
+"""
+
+@app.route("/incident-reporter", methods=["GET", "POST"])
+def incident_reporter():
+    if session.get("role") not in {"admin", "client"}:
+        return redirect(url_for("home"))
+    message = None
+    if request.method == "POST":
+        category = request.form.get("category", "").strip()[:80]
+        severity = request.form.get("severity", "Medium").strip().title()
+        summary = request.form.get("summary", "").strip()[:160]
+        description = request.form.get("description", "").strip()[:4000]
+        if not category or severity not in {"Low", "Medium", "High", "Critical"} or not summary or not description:
+            message = "Please complete all fields with valid values."
+        else:
+            report = {
+                "incident_id": "INC-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+                "reported_by": session.get("username", "unknown"),
+                "category": category,
+                "severity": severity,
+                "summary": summary,
+                "description": description,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            try:
+                report_path = Path(os.getenv("INCIDENT_REPORTS_FILE", "incident_reports.json"))
+                existing = []
+                if report_path.exists():
+                    try:
+                        existing = json.loads(report_path.read_text(encoding="utf-8"))
+                        if not isinstance(existing, list):
+                            existing = []
+                    except (json.JSONDecodeError, OSError):
+                        existing = []
+                existing.append(report)
+                report_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+                security_logger.info("scenario=PB-22 event=INCIDENT_REPORTED incident_id=%s severity=%s category=%s user=%s",
+                                     report["incident_id"], severity, category, report["reported_by"])
+                message = f"Incident submitted successfully. Reference: {report['incident_id']}"
+            except OSError:
+                message = "The incident could not be saved. Check local folder write permissions."
+    return render_template_string(INCIDENT_REPORTER_HTML, message=message)
+
+
+
+# ---------------- SCENARIO 4: SUSPICIOUS FILE UPLOAD & MALWARE ANALYSIS ----------------
+SCENARIO4_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scenario 4 | CTI Platform</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1120;--panel:#121c2f;--line:#26354d;--text:#e5edf8;--muted:#aab8cc;--accent:#60a5fa}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,Segoe UI,sans-serif}
+header{padding:18px 5%;background:#101a2b;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+header a,nav a{color:#93c5fd;text-decoration:none;margin-right:14px}main{max-width:900px;margin:32px auto;padding:0 18px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px;margin:18px 0}
+label{display:block;font-weight:650;margin-bottom:10px}input[type=file]{display:block;margin:12px 0 18px;max-width:100%}
+button{background:#2563eb;color:white;border:0;border-radius:8px;padding:11px 16px;font-weight:650;cursor:pointer}
+.muted{color:var(--muted)}.result{overflow-wrap:anywhere}.pill{display:inline-block;padding:3px 9px;border-radius:20px;background:#24344b;font-weight:700}
+.error{color:#fca5a5}.success{color:#86efac}code{overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<header><strong>CTI PLATFORM · SCENARIO 4</strong><nav><a href="/client">Client Portal</a><a href="/admin">Admin Portal</a><a href="/cti-dashboard">CTI Dashboard</a><a href="/log-watch">Log Watch</a><a href="/">Logout</a></nav></header>
+<main>
+<h1>Suspicious File Upload &amp; Malware Analysis</h1>
+<p class="muted">Files are treated as data and are never executed. The application calculates SHA-256, checks the hash with VirusTotal, and stores the uploaded file in private S3 quarantine.</p>
+<section class="panel">
+<form method="post" enctype="multipart/form-data">
+<label for="file">Choose a file (maximum 10 MB)</label>
+<input id="file" type="file" name="file" required>
+<button type="submit">Upload &amp; Analyse</button>
+</form>
+<p class="muted">VirusTotal hash lookup may return UNKNOWN if it has no existing report. UNKNOWN does not mean safe.</p>
+</section>
+{% if error %}<section class="panel error"><strong>Could not complete the workflow:</strong> {{ error }}</section>{% endif %}
+{% if result %}
+<section class="panel result">
+<h2>Analysis Result: <span class="pill">{{ result.status }}</span></h2>
+<p><strong>File:</strong> {{ result.filename }}</p>
+<p><strong>Size:</strong> {{ result.size }} bytes</p>
+<p><strong>SHA-256:</strong> <code>{{ result.sha256 }}</code></p>
+<p><strong>VirusTotal:</strong> {{ result.message }}</p>
+<p><strong>Malicious detections:</strong> {{ result.malicious }}</p>
+<p><strong>Suspicious detections:</strong> {{ result.suspicious }}</p>
+<p><strong>Harmless detections:</strong> {{ result.harmless }}</p>
+<p><strong>Undetected:</strong> {{ result.undetected }}</p>
+<p><strong>S3 quarantine object:</strong> <code>{{ result.s3_key }}</code></p>
+<p class="success">Quarantine upload: {{ result.quarantine_status }}</p>
+<p class="muted">A hash lookup is reputation information only. No detection result does not guarantee a file is safe; keep untrusted files quarantined.</p>
+{% if result.status in ["UNKNOWN", "ERROR"] %}<p class="error">This file has not been verified as safe. Keep it quarantined.</p>{% endif %}
+</section>
+{% endif %}
+</main>
+</body>
+</html>
+"""
+
+@app.route("/scenario4", methods=["GET", "POST"])
+def scenario4_malware_analysis():
+    if session.get("role") not in {"admin", "client"}:
+        return redirect(url_for("home"))
+
+    result = None
+    error = None
+    if request.method == "POST":
+        uploaded = request.files.get("file")
+        if not uploaded or not uploaded.filename:
+            error = "Choose a file before submitting."
+        else:
+            filename = secure_filename(uploaded.filename)
+            if not filename:
+                error = "The filename is not valid."
+            else:
+                file_bytes = uploaded.read(app.config["MAX_CONTENT_LENGTH"] + 1)
+                if not file_bytes:
+                    error = "The selected file is empty."
+                elif len(file_bytes) > app.config["MAX_CONTENT_LENGTH"]:
+                    error = "The file exceeds the 10 MB upload limit."
+                else:
+                    sha256 = hashlib.sha256(file_bytes).hexdigest()
+                    now = datetime.now(timezone.utc)
+                    object_key = f"uploads/{now:%Y/%m/%d}/{sha256[:16]}-{filename}"
+                    quarantine_bucket = os.getenv("CTI_QUARANTINE_BUCKET", "cti-malware-quarantine-sk-2026")
+                    quarantine_status = "FAILED"
+                    try:
+                        s3_client.put_object(
+                            Bucket=quarantine_bucket,
+                            Key=object_key,
+                            Body=file_bytes,
+                            ContentType="application/octet-stream",
+                            Metadata={"sha256": sha256, "original-filename": filename[:200]}
+                        )
+                        quarantine_status = "SUCCESS"
+                        security_logger.info(
+                            "scenario=Scenario 4 event=FILE_QUARANTINED filename=%s sha256=%s s3_key=%s",
+                            filename, sha256, object_key
+                        )
+                    except Exception as exc:
+                        security_logger.error("scenario=Scenario 4 event=S3_QUARANTINE_FAILED filename=%s error=%s", filename, str(exc))
+                        error = f"S3 quarantine failed. The file was not analysed further. Check AWS credentials and bucket permissions. Details: {exc}"
+
+                    if quarantine_status == "SUCCESS":
+                        result = {
+                            "filename": filename,
+                            "size": len(file_bytes),
+                            "sha256": sha256,
+                            "s3_key": object_key,
+                            "quarantine_status": quarantine_status,
+                            "status": "UNKNOWN",
+                            "message": "VirusTotal lookup has not completed.",
+                            "malicious": 0, "suspicious": 0, "harmless": 0, "undetected": 0
+                        }
+                        api_key = os.getenv("VT_API_KEY")
+                        if not api_key:
+                            result["status"] = "ERROR"
+                            result["message"] = "VT_API_KEY is not configured; file was quarantined but no VirusTotal lookup was performed."
+                        else:
+                            try:
+                                import requests
+                                response = requests.get(
+                                    f"https://www.virustotal.com/api/v3/files/{sha256}",
+                                    headers={"x-apikey": api_key},
+                                    timeout=20
+                                )
+                                if response.status_code == 404:
+                                    result["status"] = "UNKNOWN"
+                                    result["message"] = "No existing VirusTotal report was found for this SHA-256 hash."
+                                else:
+                                    response.raise_for_status()
+                                    attributes = response.json().get("data", {}).get("attributes", {})
+                                    stats = attributes.get("last_analysis_stats", {})
+                                    result.update({
+                                        "malicious": int(stats.get("malicious", 0) or 0),
+                                        "suspicious": int(stats.get("suspicious", 0) or 0),
+                                        "harmless": int(stats.get("harmless", 0) or 0),
+                                        "undetected": int(stats.get("undetected", 0) or 0)
+                                    })
+                                    if result["malicious"] > 0:
+                                        result["status"] = "MALICIOUS"
+                                    elif result["suspicious"] > 0:
+                                        result["status"] = "SUSPICIOUS"
+                                    else:
+                                        result["status"] = "NO_MALICIOUS_DETECTION"
+                                    result["message"] = "Existing VirusTotal hash report retrieved."
+                            except Exception as exc:
+                                result["status"] = "ERROR"
+                                result["message"] = f"VirusTotal lookup failed; file remains quarantined. {exc}"
+                        security_logger.info(
+                            "scenario=Scenario 4 event=MALWARE_SCAN filename=%s sha256=%s status=%s s3_key=%s",
+                            filename, sha256, result["status"], object_key
+                        )
+    return render_template_string(SCENARIO4_HTML, result=result, error=error)
+
+@app.errorhandler(413)
+def upload_too_large(error):
+    return render_template_string(
+        SCENARIO4_HTML,
+        result=None,
+        error="The uploaded request exceeds the 10 MB limit."
+    ), 413
 
 
 # ---------------- SCENARIO 3: CRITICAL CVE SCAN ----------------
